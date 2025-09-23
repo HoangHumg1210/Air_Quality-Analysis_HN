@@ -63,10 +63,6 @@ while start < end:
 df = pd.DataFrame(data_list)
 print("Đã crawl xong!")
 print(f'Tổng số dòng crawl đào đc: {len(df)}')
-# output = 'data_1.csv'
-# df.to_csv(output, index=False)
-# print(f'Dữ liệu đã được lưu về {output}')
-
 print("Bắt đầu crawl Data Weather...")
 
 url_weather = f"https://power.larc.nasa.gov/api/temporal/daily/point?parameters=T2M,WS2M,RH2M,PRECTOTCORR&community=AG&longitude={lon}&latitude={lat}&start=2018&end=2023&format=JSON"
