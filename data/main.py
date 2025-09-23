@@ -13,7 +13,7 @@ API_KEY = os.getenv('API_KEY')
 lat = float(os.getenv('lat'))
 lon = float(os.getenv('lon'))
 
-start = int((datetime.now() - timedelta(days = 5*365+1)).timestamp())
+start = int((datetime.now() - timedelta(days = 2*365+1)).timestamp())
 end = int(datetime.now().timestamp())
 
 url = "http://api.openweathermap.org/data/2.5/air_pollution/history"
@@ -63,6 +63,59 @@ while start < end:
 df = pd.DataFrame(data_list)
 print("Đã crawl xong!")
 print(f'Tổng số dòng crawl đào đc: {len(df)}')
+# --- ĐỔI TÊN AQI 1–5 CỦA OWM ---
+df.rename(columns={'AQI': 'AQI_cat_owm'}, inplace=True)
+
+# --- HÀM TÍNH AQI TỪ BREAKPOINT ---
+def aqi_from_breakpoints(c, table):
+    try:
+        x = float(c)
+    except (TypeError, ValueError):
+        return None
+    for C_lo, C_hi, I_lo, I_hi in table:
+        if C_lo <= x <= C_hi:
+            return (I_hi - I_lo) / (C_hi - C_lo) * (x - C_lo) + I_lo
+    return None
+
+# --- BẢNG BREAKPOINT EPA ---
+PM25_BP = [
+    (0.0, 12.0, 0, 50),
+    (12.1, 35.4, 51, 100),
+    (35.5, 55.4, 101, 150),
+    (55.5, 150.4, 151, 200),
+    (150.5, 250.4, 201, 300),
+    (250.5, 350.4, 301, 400),
+    (350.5, 500.4, 401, 500),
+]
+PM10_BP = [
+    (0, 54, 0, 50),
+    (55, 154, 51, 100),
+    (155, 254, 101, 150),
+    (255, 354, 151, 200),
+    (355, 424, 201, 300),
+    (425, 504, 301, 400),
+    (505, 604, 401, 500),
+]
+
+# --- TÍNH AQI ---
+df['AQI_PM25'] = df['PM2.5'].apply(lambda v: aqi_from_breakpoints(v, PM25_BP))
+df['AQI_PM10'] = df['PM10'].apply(lambda v: aqi_from_breakpoints(v, PM10_BP))
+df['AQI_calc'] = df[['AQI_PM25', 'AQI_PM10']].max(axis=1)
+
+# --- NHÃN MỨC AQI ---
+def aqi_label(aqi):
+    if aqi is None: return None
+    if aqi <= 50: return 'Good'
+    if aqi <= 100: return 'Moderate'
+    if aqi <= 150: return 'Unhealthy for SG'
+    if aqi <= 200: return 'Unhealthy'
+    if aqi <= 300: return 'Very Unhealthy'
+    return 'Hazardous'
+
+df['AQI_level'] = df['AQI_calc'].apply(aqi_label)
+
+print("Đã tính xong AQI chuẩn. Ví dụ:")
+print(df[['Time', 'PM2.5', 'PM10', 'AQI_PM25', 'AQI_PM10', 'AQI_calc', 'AQI_level']].head())
 print("Bắt đầu crawl Data Weather...")
 
 url_weather = f"https://power.larc.nasa.gov/api/temporal/daily/point?parameters=T2M,WS2M,RH2M,PRECTOTCORR&community=AG&longitude={lon}&latitude={lat}&start=2018&end=2023&format=JSON"
