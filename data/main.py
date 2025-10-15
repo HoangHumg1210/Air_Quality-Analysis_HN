@@ -140,5 +140,5 @@ if __name__ == "__main__":
         outputs.append(df)
 
     final_df = pd.concat(outputs, ignore_index=True)
-    final_df.to_csv("air_quality_all_districts.csv", index=False, encoding="utf-8")
-    print("Done -> air_quality_all_districts.csv")
+    final_df.to_csv("datacsv", index=False, encoding="utf-8")
+    print("Done -> datacsv")
