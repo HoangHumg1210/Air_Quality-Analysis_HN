@@ -6,7 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.seasonal import STL, seasonal_decompose
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
@@ -20,245 +20,285 @@ from statsforecast.arima import arima_string
 # ======================
 # 0) LOAD & PREPARE DATA
 # ======================
-df = pd.read_csv(r'E:\Document\PROJECT_1\data\hanoi-aqi-weather-data.csv')
-df['Local Time'] = pd.to_datetime(df['Local Time'])
-df = df.set_index('Local Time').sort_index()
+def load_pm25_data(file_path, train_ratio=0.8):
+    """Tải, tiền xử lý và chia dữ liệu PM2.5."""
+    df = pd.read_csv(file_path)
+    df['Local Time'] = pd.to_datetime(df['Local Time'])
+    df = df.set_index('Local Time').sort_index()
 
-# PM2.5 theo ngày
-df_pm25_daily = df[['PM25']].resample('D').mean().asfreq('D')
+    df_daily = df.resample('D').mean(numeric_only=True).asfreq('D').interpolate()
 
-# train/test 80/20
-cutoff = int(len(df_pm25_daily) * 0.8)
-train = df_pm25_daily.iloc[:cutoff, 0]  # Series
-test  = df_pm25_daily.iloc[cutoff:, 0]  # Series
-print("train:", train.shape, "test:", test.shape)
+    y = df_daily['PM25']
 
-# ======================
-# 1) KPI cho dự báo
-# ======================
-def get_forecast_kpis(test_series: pd.Series, forecast_series: pd.Series) -> pd.DataFrame:
-    # căn index chung (phòng trường hợp lệch)
-    common_idx = test_series.index.intersection(forecast_series.index)
-    actual = test_series.loc[common_idx].astype(float)
-    forecast = forecast_series.loc[common_idx].astype(float)
+    exog_vars = ['NO2', 'SO2', 'Pressure', 'Temperature', 'Wind Speed', 'Precipitation']
+    X = df_daily[exog_vars].copy()
+
+    result = seasonal_decompose(y, model='additive', period=7)
+    result.plot()
+    plt.suptitle('Phân rã chuỗi thời gian PM2.5 (mùa vụ tuần)')
+    plt.show()
+
+    cutoff = int(len(y) * train_ratio)
+    y_train, y_test = y.iloc[:cutoff], y.iloc[cutoff:]
+    X_train, X_test = X.iloc[:cutoff], X.iloc[cutoff:]
+
+    print(f"Dữ liệu được chia: Train={len(y_train)} mẫu, Test={len(y_test)} mẫu")
+    return df_daily, y_train, y_test, X_train, X_test
+
+
+def get_forecast_kpis(test_series, forecast_series):
+    """Tính toán các chỉ số KPI cho dự báo."""
+    actual = test_series.astype(float)
+    forecast = forecast_series.astype(float)
 
     mean_actual = actual.mean()
     bias = np.mean(forecast - actual)
-    mae  = np.mean(np.abs(forecast - actual))
+    mae = np.mean(np.abs(forecast - actual))
     rmse = np.sqrt(np.mean((forecast - actual) ** 2))
 
     kpis = {
-        'Bias': bias,
-        'Bias%': (bias / mean_actual * 100) if mean_actual != 0 else np.nan,
-        'MAE': mae,
-        'MAE%': (mae / mean_actual * 100) if mean_actual != 0 else np.nan,
         'RMSE': rmse,
-        'RMSE%': (rmse / mean_actual * 100) if mean_actual != 0 else np.nan,
+        'MAE': mae,
+        'Bias%': (bias / mean_actual * 100) if mean_actual != 0 else np.nan,
     }
     return pd.DataFrame([kpis]).round(3)
 
-# ======================
-# 2) Ước lượng bậc sai phân
-# ======================
-def get_differencing_order_d(train_series: pd.Series, max_diff: int = 10) -> int:
-    s = train_series.dropna().copy()
-    d = 0
-    for _ in range(max_diff):
-        try:
-            adf_p = adfuller(s, autolag='AIC')[1]
-        except Exception:
-            adf_p = 1.0
+
+def get_differencing_order_d(train_series):
+    """Xác định bậc sai phân không mùa vụ (d) bằng kiểm định ADF."""
+    for d in range(5):
+        adf_p = adfuller(train_series.diff(d).dropna(), autolag='AIC')[1]
         if adf_p < 0.05:
-            break
-        s = s.diff().dropna()
-        d += 1
-    return d
+            return d
+    return 2  # Mặc định nếu không tìm thấy
 
-def get_differencing_order_D(train_series: pd.Series, season_len: int = 7) -> int:
-    Fs = 0.0
-    s = train_series.dropna()
-    if len(s) >= 3 * season_len:
-        stl = STL(s, period=season_len, robust=True).fit()
-        season, resid = stl.seasonal, stl.resid
-        num = np.var(resid, ddof=1)
-        den = np.var(resid + season, ddof=1)
-        Fs = max(0.0, 1.0 - (num / den if den > 0 else 1.0))
-    return 1 if Fs > 0.6 else 0
 
-# ======================
-# 3) ACF/PACF tiện quan sát
-# ======================
-def plot_acf_pacf(train_series: pd.Series, d: int, D: int, season_len: int = 7) -> None:
-    s = train_series.copy()
-    if d > 0:
-        s = s.diff(d)
-    if D > 0:
-        s = s.diff(season_len)
-    s = s.dropna()
-    fig, ax = plt.subplots(2, 1, figsize=(10, 6))
-    plot_acf(s, lags=60, ax=ax[0])
-    plot_pacf(s, lags=60, ax=ax[1], method='ywm')
-    ax[0].set_title('ACF')
-    ax[1].set_title('PACF')
-    plt.tight_layout()
-    plt.show()
+def get_differencing_order_D(train_series, season_len=7):
+    """Xác định bậc sai phân mùa vụ (D) bằng phân rã STL."""
+    if len(train_series) < 2 * season_len:
+        return 0
+    strength = STL(train_series, period=season_len).fit().seasonal.std() / STL(train_series,
+                                                                               period=season_len).fit().resid.std()
+    return 1 if strength > 0.8 else 0
 
-# ======================
-# 4) Grid search SARIMA
-# ======================
-def sarima_grid_search(
-    train_series: pd.Series,
-    d: int,
-    D: int,
-    season_len: int = 7,
-    p_range=range(0, 3),
-    q_range=range(0, 3),
-    P_range=range(0, 3),
-    Q_range=range(0, 3)
-) -> tuple:
-    n = len(train_series.dropna())
-    candidates = []
-    for p in p_range:
-        for q in q_range:
-            for P in P_range:
-                for Q in Q_range:
+
+# ---- HÀM RIÊNG CHO TỪNG MÔ HÌNH ----
+
+# 1. Hàm cho SARIMA (đơn biến)
+def sarima_grid_search(train_series, d, D, season_len):
+    """Tìm kiếm tham số tốt nhất cho mô hình SARIMA."""
+    best_aicc, best_fit = np.inf, None
+    best_order, best_seasonal_order = None, None
+
+    for p in range(3):
+        for q in range(3):
+            for P in range(2):
+                for Q in range(2):
                     try:
-                        fit = SARIMAX(
+                        model = SARIMAX(
                             train_series,
                             order=(p, d, q),
-                            seasonal_order=(P, D, Q, season_len),
-                            enforce_stationarity=False,
-                            enforce_invertibility=False
+                            seasonal_order=(P, D, Q, season_len)
                         ).fit(disp=False)
-
-                        k = fit.params.shape[0]
-                        aic = fit.aic
-                        aicc = aic + (2 * k * (k + 1)) / (n - k - 1) if (n - k - 1) > 0 else np.inf
-
-                        lag = season_len if season_len < n // 2 else max(1, n // 4)
-                        lb = acorr_ljungbox(fit.resid.dropna(), lags=[lag], return_df=True)
-                        lb_ok = (lb["lb_pvalue"] > 0.05).all()
-
-                        candidates.append((aicc, lb_ok, (p, d, q), (P, D, Q, season_len), fit))
-                    except Exception:
+                        if model.aicc < best_aicc:
+                            best_aicc = model.aicc
+                            best_fit = model
+                            best_order = (p, d, q)
+                            best_seasonal_order = (P, D, Q, season_len)
+                    except:
                         continue
+    return best_fit, best_order, best_seasonal_order
 
-    if not candidates:
-        raise RuntimeError("No SARIMA fits succeeded.")
 
-    valid = [c for c in candidates if c[1]]
-    best = min(valid, key=lambda x: x[0]) if valid else min(candidates, key=lambda x: x[0])
-    return best
+# 2. Hàm cho SARIMAX (đa biến)
+def sarimax_grid_search(train_series, d, D, season_len, exog_train):
+    """Tìm kiếm tham số tốt nhất cho mô hình SARIMAX."""
+    best_aicc, best_fit = np.inf, None
+    best_order, best_seasonal_order = None, None
 
-# ======================
-# 5) Forecast + Plot
-# ======================
-def forecast_and_plot_sarima(
-    train_series: pd.Series,
-    test_series: pd.Series,
-    fitted_model,
-    steps: int
-) -> pd.Series:
-    fcst_res = fitted_model.get_forecast(steps=steps)
-    fcst_df = fcst_res.summary_frame()
-    fcst_mean = fcst_df['mean']
+    for p in range(3):
+        for q in range(3):
+            for P in range(2):
+                for Q in range(2):
+                    try:
+                        model = SARIMAX(
+                            train_series,
+                            exog=exog_train,  # Thêm biến ngoại sinh
+                            order=(p, d, q),
+                            seasonal_order=(P, D, Q, season_len)
+                        ).fit(disp=False)
+                        if model.aicc < best_aicc:
+                            best_aicc = model.aicc
+                            best_fit = model
+                            best_order = (p, d, q)
+                            best_seasonal_order = (P, D, Q, season_len)
+                    except:
+                        continue
+    return best_fit, best_order, best_seasonal_order
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_series, label="Train")
-    plt.plot(test_series, label="Test")
-    plt.plot(fcst_mean, label="Forecast")
-    plt.fill_between(fcst_df.index, fcst_df['mean_ci_lower'], fcst_df['mean_ci_upper'], alpha=0.25)
-    plt.axvline(train_series.index[-1], linestyle="--", alpha=0.4)
-    plt.title(f"SARIMA Forecast ({steps}-step horizon, ±95% CI)")
-    plt.legend()
-    plt.grid(alpha=0.3)
+
+def plot_forecast_with_ci(train_series, test_series, forecast_obj, model_name):
+    """Vẽ biểu đồ dự báo với khoảng tin cậy."""
+    forecast_df = forecast_obj.summary_frame()
+
+    plt.figure(figsize=(15, 6))
+    plt.plot(train_series.index, train_series.values, label='Train', color='blue', linewidth=1.5)
+    plt.plot(test_series.index, test_series.values, label='Actual (Test)', color='green', linewidth=2)
+    plt.plot(forecast_df.index, forecast_df['mean'], label='Forecast', color='red', linewidth=2, linestyle='--')
+
+    # Vẽ khoảng tin cậy 95%
+    plt.fill_between(forecast_df.index,
+                     forecast_df['mean_ci_lower'],
+                     forecast_df['mean_ci_upper'],
+                     alpha=0.3, color='red', label='95% Confidence Interval')
+
+    plt.axvline(x=train_series.index[-1], color='gray', linestyle='--', linewidth=1, alpha=0.7)
+    plt.title(f'{model_name} - Dự báo PM2.5 với khoảng tin cậy 95%', fontsize=14, fontweight='bold')
+    plt.xlabel('Thời gian', fontsize=12)
+    plt.ylabel('PM2.5', fontsize=12)
+    plt.legend(loc='best', fontsize=10)
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
 
-    return fcst_mean
 
-# ======================
-# 6) AutoARIMA (StatsForecast)
-# ======================
-def autoarima_statsforecast_pipeline(
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    season_len: int = 7,
-    steps: int = 22,
-):
-    # Ensure datetime
-    train_df["date"] = pd.to_datetime(train_df["date"], errors="coerce")
-    test_df["date"]  = pd.to_datetime(test_df["date"], errors="coerce")
+def plot_all_forecasts_comparison(train_series, test_series, forecasts_dict):
+    """Vẽ biểu đồ so sánh tất cả các mô hình dự báo."""
+    plt.figure(figsize=(16, 8))
 
-    # StatsForecast format
-    train_sf = (
-        train_df.rename(columns={"date": "ds", "total_sales": "y"})
-        .assign(unique_id="series")[["unique_id", "ds", "y"]]
-    )
-    freq = pd.infer_freq(train_sf["ds"]) or "D"
+    # Vẽ dữ liệu train
+    plt.plot(train_series.index, train_series.values,
+             label='Train', color='blue', linewidth=1.5, alpha=0.7)
 
-    # Fit AutoARIMA
-    sf_model = StatsForecast(models=[AutoARIMA(season_length=season_len)], freq=freq, n_jobs=-1)
-    fitted_model = sf_model.fit(train_sf)
-    forecast_sf = fitted_model.predict(h=steps)  # columns: unique_id, ds, AutoARIMA
+    # Vẽ dữ liệu test (actual)
+    plt.plot(test_series.index, test_series.values,
+             label='Actual (Test)', color='black', linewidth=2.5, marker='o', markersize=4)
 
-    # Show structure
-    fitted_orders = fitted_model.fitted_[0][0]
-    print("AutoARIMA model structure:")
-    print(arima_string(fitted_orders.model_))
+    # Vẽ các dự báo
+    colors = ['red', 'green', 'purple', 'orange']
+    styles = ['--', '-.', ':', '--']
 
-    # Convert test
-    test_sf = test_df.rename(columns={"date": "ds", "total_sales": "y"})[["ds", "y"]]
+    for i, (model_name, forecast_values) in enumerate(forecasts_dict.items()):
+        plt.plot(test_series.index, forecast_values,
+                label=f'{model_name}',
+                color=colors[i % len(colors)],
+                linewidth=2,
+                linestyle=styles[i % len(styles)],
+                marker='s', markersize=3)
 
-    # Plot
-    plt.figure(figsize=(12, 6))
-    plt.plot(train_sf["ds"], train_sf["y"], label="Train", color="blue")
-    plt.plot(test_sf["ds"], test_sf["y"], label="Test", color="red")
-    plt.plot(forecast_sf["ds"], forecast_sf["AutoARIMA"], label="Forecast", color="green")
-    plt.axvline(train_sf["ds"].max(), color="gray", linestyle="--", alpha=0.6)
-    plt.title(f"StatsForecast AutoARIMA Forecast ({steps}-step horizon)")
-    plt.xlabel("Date"); plt.ylabel("Value"); plt.legend(); plt.tight_layout(); plt.show()
+    plt.axvline(x=train_series.index[-1], color='gray', linestyle='--', linewidth=2, alpha=0.5)
+    plt.title('So sánh các mô hình dự báo PM2.5', fontsize=16, fontweight='bold')
+    plt.xlabel('Thời gian', fontsize=12)
+    plt.ylabel('PM2.5', fontsize=12)
+    plt.legend(loc='best', fontsize=11)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
-    return train_sf, test_sf, forecast_sf
 
-# ======================
-# 7) RUN
-# ======================
-# AutoARIMA dùng DataFrame (date, total_sales)
-df_pm25_train = train.to_frame(name="PM25")
-df_pm25_test  = test.to_frame(name="PM25")
-train_df = df_pm25_train.reset_index().rename(columns={"Local Time": "date", "PM25": "total_sales"})
-test_df  = df_pm25_test.reset_index().rename(columns={"Local Time": "date", "PM25": "total_sales"})
+# Tải và chia dữ liệu
+file_path = 'E:\Document\PROJECT_1\data\hanoi-aqi-weather-data.csv' # Thay đổi đường dẫn đến file của bạn
+df_daily, y_train, y_test, X_train, X_test = load_pm25_data(file_path, train_ratio=0.8)
 
-# Chạy AutoARIMA
-train_sf, test_sf, forecast_sf = autoarima_statsforecast_pipeline(
-    train_df=train_df,
-    test_df=test_df,
-    season_len=7,                 # chu kỳ tuần cho dữ liệu theo ngày
-    steps=len(test_df)
-)
-
-# SARIMA: tìm d, D và grid-search
+# Xác định các tham số cơ bản
 season_len = 7
-d = get_differencing_order_d(train)
-D = get_differencing_order_D(train, season_len=season_len)
-print(f"d = {d}, D = {D}")
+d = get_differencing_order_d(y_train)
+D = get_differencing_order_D(y_train, season_len=season_len)
 
-plot_acf_pacf(train, d=d, D=D, season_len=season_len)
+print(f"\nBậc sai phân được xác định: d={d}, D={D}, Chu kỳ mùa vụ={season_len}")
 
-best = sarima_grid_search(train, d=d, D=D, season_len=season_len)
-print("Best AICc:", best[0], "| Ljung-Box ok:", best[1], "| Orders:", best[2], "| Seasonal:", best[3])
 
-sarima_forecast = forecast_and_plot_sarima(train, test, best[4], steps=len(test))
+# --- MÔ HÌNH 1: SARIMA ---
+print("\n--- Bắt đầu xây dựng mô hình SARIMA (đơn biến) ---")
 
-# ======================
-# 8) KPI so sánh
-# ======================
-print("Forecasting KPIs – SARIMA")
-print(get_forecast_kpis(test_series=test, forecast_series=sarima_forecast))
+# Tìm mô hình tốt nhất bằng Grid Search
+sarima_fit, sarima_order, sarima_seasonal_order = sarima_grid_search(y_train, d, D, season_len)
+print(f"SARIMA tốt nhất: order={sarima_order}, seasonal_order={sarima_seasonal_order}")
 
-print("Forecasting KPIs – AutoARIMA (StatsForecast)")
-# đưa test_sf về Series, căn cùng index với forecast_sf
-auto_series = pd.Series(forecast_sf["AutoARIMA"].values, index=forecast_sf["ds"])
-test_series  = pd.Series(test_sf["y"].values, index=test_sf["ds"])
-print(get_forecast_kpis(test_series=test_series, forecast_series=auto_series))
+# Lấy dự báo cho tập test
+sarima_forecast = sarima_fit.get_forecast(steps=len(y_test)).predicted_mean
+
+# --- MÔ HÌNH 2: SARIMAX ---
+print("\n--- Bắt đầu xây dựng mô hình SARIMAX (có biến ngoại sinh) ---")
+
+# Tìm mô hình tốt nhất bằng Grid Search
+sarimax_fit, sarimax_order, sarimax_seasonal_order = sarimax_grid_search(y_train, d, D, season_len, exog_train=X_train)
+print(f"SARIMAX tốt nhất: order={sarimax_order}, seasonal_order={sarimax_seasonal_order}")
+
+# Lấy dự báo cho tập test (phải cung cấp các biến ngoại sinh của tập test)
+sarimax_forecast = sarimax_fit.get_forecast(steps=len(y_test), exog=X_test).predicted_mean
+
+# --- MÔ HÌNH 3: AutoARIMAX ---
+print("\n--- Bắt đầu xây dựng mô hình AutoARIMAX (tự động) ---")
+
+# Chuẩn bị DataFrame cho StatsForecast
+train_df_sf = y_train.reset_index().rename(columns={"Local Time": "ds", "PM25": "y"})
+train_df_sf['unique_id'] = 'pm25_series'
+train_df_sf = pd.merge(train_df_sf, X_train.reset_index().rename(columns={"Local Time": "ds"}), on='ds')
+
+X_test_sf = X_test.reset_index().rename(columns={"Local Time": "ds"})
+X_test_sf['unique_id'] = 'pm25_series'
+
+# Huấn luyện và dự báo
+exog_vars = list(X_train.columns)
+sf_model = StatsForecast(models=[AutoARIMA(season_length=season_len)], freq='D')
+sf_model.fit(train_df_sf, X_df=train_df_sf[exog_vars])
+autoarimax_forecast_sf = sf_model.predict(h=len(y_test), X_df=X_test_sf[exog_vars])
+
+# Chuyển kết quả về dạng Series để so sánh
+autoarimax_forecast = pd.Series(autoarimax_forecast_sf['AutoARIMA'].values, index=y_test.index)
+
+print(f"AutoARIMAX đã chọn mô hình: {sf_model.models[0]}")
+
+
+# --- SO SÁNH KẾT QUẢ ---
+print("\n" + "="*60)
+print("--- SO SÁNH KẾT QUẢ CÁC MÔ HÌNH ---")
+print("="*60)
+
+# 1. Vẽ biểu đồ so sánh tất cả các mô hình
+forecasts_dict = {
+    'SARIMA': sarima_forecast.values,
+    'SARIMAX': sarimax_forecast.values,
+    'AutoARIMAX': autoarimax_forecast.values
+}
+plot_all_forecasts_comparison(y_train, y_test, forecasts_dict)
+
+# 2. Tạo DataFrame tổng hợp
+results_df = pd.DataFrame({
+    'Thực tế': y_test,
+    'SARIMA': sarima_forecast,
+    'SARIMAX': sarimax_forecast,
+    'AutoARIMAX': autoarimax_forecast
+})
+
+# 3. Vẽ biểu đồ so sánh dạng bảng
+results_df.plot(figsize=(15, 8), style=['-', '--', '--', '-.'],
+                title='So sánh kết quả dự báo PM2.5 của các mô hình',
+                linewidth=1.5)
+plt.legend()
+plt.grid(True, alpha=0.4)
+plt.show()
+
+# 4. Tính toán và in bảng KPI
+kpi_sarima = get_forecast_kpis(y_test, sarima_forecast)
+kpi_sarimax = get_forecast_kpis(y_test, sarimax_forecast)
+kpi_autoarimax = get_forecast_kpis(y_test, autoarimax_forecast)
+
+kpi_sarima['Model'] = 'SARIMA (đơn biến)'
+kpi_sarimax['Model'] = 'SARIMAX (đa biến)'
+kpi_autoarimax['Model'] = 'AutoARIMAX (tự động)'
+
+kpi_summary = pd.concat([kpi_sarima, kpi_sarimax, kpi_autoarimax]).set_index('Model')
+
+print("\n--- Bảng so sánh KPI của các mô hình ---")
+print(kpi_summary[['RMSE', 'MAE', 'Bias%']])
+
+# 5. Kết luận
+best_model = kpi_summary['RMSE'].idxmin()
+print(f"\n{'='*60}")
+print(f"=> KẾT LUẬN: Mô hình '{best_model}' cho kết quả tốt nhất")
+print(f"   RMSE: {kpi_summary.loc[best_model, 'RMSE']:.3f}")
+print(f"   MAE: {kpi_summary.loc[best_model, 'MAE']:.3f}")
+print(f"   Bias%: {kpi_summary.loc[best_model, 'Bias%']:.3f}%")
+print(f"{'='*60}")
