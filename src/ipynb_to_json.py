@@ -3,7 +3,7 @@ import json
 try:
     output_file = 'Models.json'
 
-    with open('src/Models.ipynb', mode='r', encoding='utf-8') as f:
+    with open('E:\Document\PROJECT_1\src\models_2.ipynb', mode='r', encoding='utf-8') as f:
         my_file = json.loads(f.read())
 
     with open(output_file, mode='w', encoding='utf-8') as f:
