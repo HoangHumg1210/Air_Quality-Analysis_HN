@@ -1,0 +1,12 @@
+District,Nearest Station,UID,AQI,Station Lat,Station Lon,Distance (km)
+Ba Dinh,"Hanoi US Embassy, Vietnam (Đại sứ quán Mỹ, Hà Nội)",8641,,21.0215063,105.8188748,1.45
+Hoan Kiem,"Hanoi US Embassy, Vietnam (Đại sứ quán Mỹ, Hà Nội)",8641,,21.0215063,105.8188748,3.75
+Tay Ho,"United Nations International School of Hanoi, Vietnam (Trường Quốc tế Liên Hợp Quốc Hà Nội)",8688,129.0,21.0811211,105.8180306,1.52
+Cau Giay,"Hà Nội/Chi cục BVMT, Vietnam",13026,87.0,21.01525,105.80013,2.53
+Dong Da,"Hanoi US Embassy, Vietnam (Đại sứ quán Mỹ, Hà Nội)",8641,,21.0215063,105.8188748,1.1
+Hai Ba Trung,"Hanoi US Embassy, Vietnam (Đại sứ quán Mỹ, Hà Nội)",8641,,21.0215063,105.8188748,4.61
+Hoang Mai,"Hanoi US Embassy, Vietnam (Đại sứ quán Mỹ, Hà Nội)",8641,,21.0215063,105.8188748,6.92
+Thanh Xuan,"Hà Nội/Chi cục BVMT, Vietnam",13026,87.0,21.01525,105.80013,2.62
+Long Bien,"Hanoi, Vietnam (Hà Nội)",1583,125.0,21.0491,105.8831,0.62
+Nam Tu Liem,"Hà Nội/Chi cục BVMT, Vietnam",13026,87.0,21.01525,105.80013,3.72
+Ha Dong,"Hà Nội/Chi cục BVMT, Vietnam",13026,87.0,21.01525,105.80013,7.19
