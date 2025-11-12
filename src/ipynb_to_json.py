@@ -1,9 +1,9 @@
 import json
 
 try:
-    output_file = 'Models.json'
+    output_file = 'ARIMA.json'
 
-    with open('E:\Document\PROJECT_1\src\Models.ipynb', mode='r', encoding='utf-8') as f:
+    with open('E:\Document\PROJECT_1\src\ARIMA.ipynb', mode='r', encoding='utf-8') as f:
         my_file = json.loads(f.read())
 
     with open(output_file, mode='w', encoding='utf-8') as f:
