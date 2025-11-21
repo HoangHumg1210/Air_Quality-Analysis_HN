@@ -7,15 +7,23 @@ from scipy import stats
 # ==========================
 # 1. Biến ngày nghỉ / ngày lễ
 # ==========================
-# 👉 HÃY COPY nguyên dict holiday_periods trong notebook của bạn vào đây.
+
 holiday_periods = {
+    # 2023
     'Tết 2023': ('2023-01-20', '2023-01-26'),
     'Lễ 30/4-1/5 2023': ('2023-04-29', '2023-05-03'),
     'Lễ 2/9 2023': ('2023-08-31', '2023-09-04'),
+
+    # 2024
     'Tết Dương 2024': ('2023-12-30', '2024-01-01'),
     'Tết 2024': ('2024-02-08', '2024-02-14'),
     'Lễ 30/4-1/5 2024': ('2024-04-27', '2024-05-01'),
     'Lễ 2/9 2024': ('2024-08-31', '2024-09-03'),
+
+    # 2025
+    'Tết Dương 2025': ('2025-01-01', '2025-01-01'),
+    'Lễ 30/4-1/5 2025': ('2025-04-27', '2025-05-01'),
+    'Lễ 2/9 2025': ('2025-08-30', '2025-09-02'),
 }
 
 
@@ -40,16 +48,6 @@ def build_pm25_daily(df: pd.DataFrame) -> pd.Series:
 # 3. Hàm build exog daily
 # ==========================
 def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.DataFrame:
-    """
-    Xây exog theo ngày, align với index_target (index của PM25).
-    Tạo các cột:
-      - PM10, NO2, SO2 (daily mean)
-      - pressure (daily mean)
-      - IsWeekend, IsHoliday
-      - pressure_lag1, PM10_lag1
-      - IsHoliday_lag1, IsHoliday_lag2
-    Sau đó bạn sẽ chọn đúng exog_cols từ config.
-    """
     df = df.copy()
     df["Local Time"] = pd.to_datetime(df["Local Time"])
     df = df.set_index("Local Time").sort_index()
@@ -118,10 +116,6 @@ def scale_exog(exog_df: pd.DataFrame, scaler, exog_cols) -> pd.DataFrame:
 # 5. Transform / Inverse-transform
 # ==========================
 def transform_series(s: pd.Series, method="identity"):
-    """
-    Giống hệt hàm bạn dùng khi train: 'identity' / 'log' / 'boxcox'
-    Trả về: series đã transform, cùng index; và lambda (cho boxcox)
-    """
     s = pd.Series(s).astype(float)
 
     if method == "identity":
@@ -139,9 +133,7 @@ def transform_series(s: pd.Series, method="identity"):
 
 
 def inv_transform(s_t: pd.Series, method="identity", lam=None):
-    """
-    Inverse transform ngược lại về thang gốc.
-    """
+
     s_t = pd.Series(s_t).astype(float)
 
     if method == "identity":
