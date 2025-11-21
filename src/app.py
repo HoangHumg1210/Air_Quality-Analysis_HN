@@ -248,7 +248,21 @@ for v in df_forecast["PM25_pred"]:
 df_forecast["AQI"] = aqis
 df_forecast["Mức"] = cats
 
-# Ngày đầu tiên
+# Chọn 1 ngày bất kỳ để xem chi tiết
+with st.sidebar:
+    st.subheader("Xem dự báo theo ngày")
+    selected_date = st.selectbox(
+        "Chọn ngày dự báo",
+        options=list(preds.index),
+        format_func=lambda d: d.strftime("%Y-%m-%d")
+    )
+
+pm_selected = preds.loc[selected_date]
+lo_selected = lo.loc[selected_date]
+hi_selected = hi.loc[selected_date]
+cat_sel, aqi_sel = pm25_to_aqi(float(pm_selected))
+
+# Ngày đầu tiên dãy dự báo (giữ lại cho phần summary)
 ngay_dau = preds.index[0]
 pm_dau = preds.iloc[0]
 cat_dau, aqi_dau = pm25_to_aqi(float(pm_dau))
@@ -277,10 +291,7 @@ with st.sidebar:
 def plot_forecast_main():
     fig, ax = plt.subplots(figsize=(12, 4))
 
-    # Chỉ vẽ đường dự báo, không vẽ PM2.5 thực tế
     ax.plot(preds.index, preds, label="Dự báo SARIMAX")
-
-    # Vẽ khoảng tin cậy 95%
     ax.fill_between(
         preds.index,
         lo,
@@ -329,10 +340,20 @@ if view_mode == "Tổng quan":
     st.subheader("Tổng quan dự báo")
     plot_forecast_main()
     plot_aqi_time()
+
+    # Thông tin tổng quan + ngày được chọn
     st.markdown(
         f"- Model đang dự báo **{len(preds)} ngày**.\n"
         f"- Ngày đầu tiên dự báo: **{ngay_dau.date()}**, mức chất lượng không khí **{cat_dau}** (AQI ≈ {aqi_dau})."
     )
+
+    st.subheader(f"Dự báo chi tiết cho ngày {selected_date.date()}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("PM2.5", f"{pm_selected:.2f} µg/m³")
+    c2.metric("CI thấp", f"{lo_selected:.2f}")
+    c3.metric("CI cao", f"{hi_selected:.2f}")
+    st.metric("AQI", f"{aqi_sel} ({cat_sel})")
+
     st.dataframe(df_forecast)
 
 elif view_mode == "Đánh giá mô hình":
