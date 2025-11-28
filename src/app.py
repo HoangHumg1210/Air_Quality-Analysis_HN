@@ -1,6 +1,7 @@
 # src/app.py
 import json
 from pathlib import Path
+import zipfile as zf
 
 import joblib
 import numpy as np
@@ -69,7 +70,18 @@ def load_model_and_cfg():
     base_dir = Path(__file__).resolve().parent  # src/
     model_dir = base_dir.parent / "models"      # ../models
 
-    model = joblib.load(model_dir / "sarimax_pm25.pkl")
+    
+    scaler = joblib.load(model_dir / "exog_scaler.pkl")
+    
+    zipped = model_dir / "sarimax_pm25.zip"
+    pkl_file = model_dir / "sarimax_pm25.pkl"
+
+    # Nếu file .pkl chưa được giải nén → giải nén nó
+    if zipped.exists() and not pkl_file.exists():
+        with zipfile.ZipFile(zipped, 'r') as zip_ref:
+            zip_ref.extractall(model_dir)
+
+    model = joblib.load(pkl_file)
     scaler = joblib.load(model_dir / "exog_scaler.pkl")
 
     with open(model_dir / "config_pm25.json", "r", encoding="utf-8") as f:
