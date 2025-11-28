@@ -1,7 +1,7 @@
 # src/app.py
 import json
 from pathlib import Path
-import zipfile as zf
+import zipfile 
 
 import joblib
 import numpy as np
