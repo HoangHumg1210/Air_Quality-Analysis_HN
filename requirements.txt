@@ -7,3 +7,4 @@ statsmodels==0.14.4
 scipy==1.16.0
 joblib==1.5.1
 plotly==5.22.0
+zipfile36==0.1.3
