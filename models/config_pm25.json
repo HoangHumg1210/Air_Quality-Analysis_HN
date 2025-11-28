@@ -1,0 +1,27 @@
+{
+  "order": [
+    1,
+    1,
+    2
+  ],
+  "seasonal_order": [
+    0,
+    0,
+    1,
+    7
+  ],
+  "transform": "log",
+  "lam": null,
+  "exog_cols": [
+    "PM10",
+    "NO2",
+    "SO2",
+    "pressure",
+    "pressure_lag1",
+    "IsWeekend",
+    "IsHoliday",
+    "IsHoliday_lag1",
+    "IsHoliday_lag2",
+    "PM10_lag1"
+  ]
+}

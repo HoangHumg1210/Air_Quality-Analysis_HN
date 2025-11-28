@@ -3,10 +3,10 @@ import json
 from pathlib import Path
 
 import joblib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 from utils_pm25 import (
     build_pm25_daily,
@@ -46,6 +46,21 @@ def pm25_to_aqi(pm: float):
     return "Không xác định", 0
 
 
+def aqi_icon(cat: str) -> str:
+    """Trả về icon đơn giản theo mức AQI."""
+    if cat == "Tốt":
+        return "🟢"
+    if cat == "Trung bình":
+        return "🟡"
+    if cat.startswith("Không tốt"):
+        return "🟠"
+    if cat in ["Kém", "Rất kém"]:
+        return "🔴"
+    if cat == "Nguy hại":
+        return "🟥"
+    return "🟣"
+
+
 # ==========================
 # 1. Load model + scaler + config
 # ==========================
@@ -83,8 +98,19 @@ def load_default_csv():
 # ==========================
 st.set_page_config(
     page_title="PM2.5 Forecast - SARIMAX",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
+
+# Ẩn header/menu/footer Streamlit cho giao diện “dashboard” sạch hơn
+hide_streamlit_style = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 model, scaler, cfg = load_model_and_cfg()
 
@@ -104,7 +130,7 @@ with st.sidebar:
         uploaded = st.file_uploader(
             "Upload dữ liệu (CSV)",
             type=["csv"],
-            help="File có schema giống dữ liệu train (có cột Local Time, PM25, ...)"
+            help="File có schema giống dữ liệu train (có cột Local Time, PM25, ...)",
         )
 
     with st.expander("Thông tin mô hình"):
@@ -134,6 +160,15 @@ st.caption(f"Đang dùng {data_source}")
 # 4. Xử lý dữ liệu theo ngày
 # ==========================
 has_pm25 = "PM25" in df_new.columns
+
+# Nếu không có PM25 thì vẫn cần Local Time để tạo index ngày
+if not has_pm25 and "Local Time" not in df_new.columns:
+    st.error(
+        "File CSV cần có cột 'PM25' hoặc ít nhất cột 'Local Time' "
+        "để có thể xây dựng chuỗi thời gian theo ngày."
+    )
+    st.stop()
+
 if has_pm25:
     pm25_daily = build_pm25_daily(df_new)
 else:
@@ -203,17 +238,17 @@ else:
     preds = inv_transform(
         preds_tf,
         method=cfg["transform"],
-        lam=cfg["lam"]
+        lam=cfg["lam"],
     )
     lo = inv_transform(
         lo_tf,
         method=cfg["transform"],
-        lam=cfg["lam"]
+        lam=cfg["lam"],
     )
     hi = inv_transform(
         hi_tf,
         method=cfg["transform"],
-        lam=cfg["lam"]
+        lam=cfg["lam"],
     )
 
     preds.index = exog_future.index
@@ -248,13 +283,19 @@ for v in df_forecast["PM25_pred"]:
 df_forecast["AQI"] = aqis
 df_forecast["Mức"] = cats
 
+# Chỉ số AQI tổng quan trên cả dải dự báo
+aqi_series = df_forecast["AQI"]
+aqi_mean = aqi_series.mean()
+aqi_max = aqi_series.max()
+cat_max, _ = pm25_to_aqi(aqi_max)
+
 # Chọn 1 ngày bất kỳ để xem chi tiết
 with st.sidebar:
     st.subheader("Xem dự báo theo ngày")
     selected_date = st.selectbox(
         "Chọn ngày dự báo",
         options=list(preds.index),
-        format_func=lambda d: d.strftime("%Y-%m-%d")
+        format_func=lambda d: d.strftime("%Y-%m-%d"),
     )
 
 pm_selected = preds.loc[selected_date]
@@ -268,100 +309,218 @@ pm_dau = preds.iloc[0]
 cat_dau, aqi_dau = pm25_to_aqi(float(pm_dau))
 
 # ==========================
-# 7. Sidebar (phần sau forecast): MAE/RMSE + menu
+# 8. Các hàm vẽ biểu đồ (Plotly)
 # ==========================
-with st.sidebar:
-    # Hiển thị MAE/RMSE nếu có
-    if mae is not None and rmse is not None:
-        st.subheader("Đánh giá mô hình")
-        c1, c2 = st.columns(2)
-        c1.metric("MAE", f"{mae:.3f}")
-        c2.metric("RMSE", f"{rmse:.3f}")
+def plot_forecast_interactive(preds, lo, hi):
+    """Vẽ biểu đồ dự báo tương tác với Plotly."""
+    fig = go.Figure()
 
-    # Menu chế độ hiển thị
-    modes = ["Tổng quan"]
-    if has_pm25:
-        modes.append("Đánh giá mô hình")
+    # CI trên
+    fig.add_trace(go.Scatter(
+        x=preds.index,
+        y=hi,
+        mode="lines",
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo="skip",
+        name="CI trên",
+    ))
 
-    view_mode = st.radio("Chế độ hiển thị", modes)
+    # CI dưới + fill
+    fig.add_trace(go.Scatter(
+        x=preds.index,
+        y=lo,
+        mode="lines",
+        line=dict(width=0),
+        fill="tonexty",
+        fillcolor="rgba(0, 100, 255, 0.1)",
+        name="Khoảng tin cậy 95%",
+        hoverinfo="skip",
+    ))
 
-# ==========================
-# 8. Các hàm vẽ biểu đồ
-# ==========================
-def plot_forecast_main():
-    fig, ax = plt.subplots(figsize=(12, 4))
+    # Đường dự báo
+    fig.add_trace(go.Scatter(
+        x=preds.index,
+        y=preds,
+        mode="lines+markers",
+        name="Dự báo PM2.5",
+        line=dict(color="#1f77b4", width=3),
+        marker=dict(size=5),
+    ))
 
-    ax.plot(preds.index, preds, label="Dự báo SARIMAX")
-    ax.fill_between(
-        preds.index,
-        lo,
-        hi,
-        alpha=0.15,
-        label="95% CI",
+    # Vạch ngưỡng nhạy cảm
+    fig.add_hline(
+        y=35.4,
+        line_dash="dot",
+        line_color="orange",
+        annotation_text="Ngưỡng nhạy cảm 35.4",
     )
 
-    ax.set_xlabel("Ngày")
-    ax.set_ylabel("Nồng độ PM2.5 (µg/m³)")
-    ax.set_title("Chỉ số PM2.5 dự báo")
-    ax.legend()
-    st.pyplot(fig)
+    fig.update_layout(
+        title="Dự báo nồng độ PM2.5 theo thời gian",
+        xaxis_title="Ngày",
+        yaxis_title="Nồng độ PM2.5 (µg/m³)",
+        hovermode="x unified",
+        template="plotly_white",
+        height=420,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
-def plot_compare():
-    if has_pm25 and (y_true is not None):
-        fig, ax = plt.subplots(figsize=(12, 4))
-        ax.plot(y_true.index, y_true, label="Thực tế")
-        ax.plot(preds.index, preds, label="Dự báo", linestyle="--")
-        ax.set_xlabel("Ngày")
-        ax.set_ylabel("PM2.5 (µg/m³)")
-        ax.set_title("So sánh PM2.5 thực tế vs dự báo")
-        ax.legend()
-        st.pyplot(fig)
-    else:
-        st.info(
-            "Không có cột PM25 thực tế trong dữ liệu đầu vào "
-            "nên không thể vẽ biểu đồ so sánh."
+def plot_compare_interactive(y_true, y_pred):
+    """So sánh thực tế vs dự báo bằng Plotly."""
+    if (y_true is None) or (y_pred is None):
+        st.info("Không có dữ liệu PM2.5 thực tế để so sánh.")
+        return
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=y_true.index,
+        y=y_true,
+        mode="lines",
+        name="Thực tế",
+        line=dict(color="green"),
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=y_pred.index,
+        y=y_pred,
+        mode="lines",
+        name="Dự báo",
+        line=dict(color="red", dash="dash"),
+    ))
+
+    fig.update_layout(
+        title="So sánh PM2.5: Thực tế vs Dự báo",
+        xaxis_title="Ngày",
+        yaxis_title="PM2.5 (µg/m³)",
+        hovermode="x unified",
+        template="plotly_white",
+        height=420,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def plot_aqi_gauge(aqi_val, cat_val):
+    """Vẽ đồng hồ đo AQI."""
+    color_map = {
+        "Tốt": "green",
+        "Trung bình": "yellow",
+        "Không tốt cho nhóm nhạy cảm": "orange",
+        "Kém": "red",
+        "Rất kém": "purple",
+        "Nguy hại": "maroon",
+    }
+    color = color_map.get(cat_val, "grey")
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number+delta",
+        value=aqi_val,
+        domain={"x": [0, 1], "y": [0, 1]},
+        title={"text": f"<b>AQI: {cat_val}</b>"},
+        delta={
+            "reference": 50,
+            "increasing": {"color": "red"},
+            "decreasing": {"color": "green"},
+        },
+        gauge={
+            "axis": {"range": [0, 500]},
+            "bar": {"color": color},
+            "steps": [
+                {"range": [0, 50], "color": "#e6f5e6"},
+                {"range": [50, 100], "color": "#ffffe0"},
+                {"range": [100, 150], "color": "#ffebcc"},
+                {"range": [150, 200], "color": "#ffcccc"},
+                {"range": [200, 300], "color": "#e6ccff"},
+                {"range": [300, 500], "color": "#660000"},
+            ],
+        },
+    ))
+    fig.update_layout(height=260, margin=dict(l=20, r=20, t=50, b=20))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ==========================
+# 9. Nội dung MAIN – dùng Tabs
+# ==========================
+tab_overview, tab_detail, tab_eval = st.tabs(
+    [" Tổng quan", " Chi tiết ngày", "Đánh giá mô hình"]
+)
+
+# --- TAB 1: TỔNG QUAN ---
+with tab_overview:
+    st.subheader(f"Dự báo {len(preds)} ngày tới (từ {ngay_dau.date()})")
+
+    cols = st.columns(4)
+    with cols[0]:
+        st.metric("AQI trung bình", f"{aqi_mean:.0f}")
+    with cols[1]:
+        delta_max = aqi_max - aqi_mean
+        st.metric(
+            "AQI cao nhất",
+            f"{aqi_max:.0f}",
+            delta=f"{delta_max:+.0f}",
+            help=f"Mức: {cat_max}",
+        )
+    with cols[2]:
+        st.metric("PM2.5 trung bình", f"{preds.mean():.2f} µg/m³")
+    with cols[3]:
+        if mae is not None:
+            st.metric("Sai số MAE", f"{mae:.2f}")
+        else:
+            st.metric("Sai số MAE", "N/A")
+
+    st.markdown(
+        f"- Ngày đầu tiên dự báo: **{ngay_dau.date()}**, AQI khoảng **{aqi_dau} ({cat_dau})**."
+    )
+
+    plot_forecast_interactive(preds, lo, hi)
+
+    with st.expander("Xem bảng dữ liệu dự báo"):
+        st.dataframe(
+            df_forecast,
+            use_container_width=True,
         )
 
+# --- TAB 2: CHI TIẾT NGÀY ---
+with tab_detail:
+    c_sel1, c_sel2 = st.columns([1, 2])
+    with c_sel1:
+        st.info("Chọn ngày cần xem chi tiết ở Sidebar.")
+        plot_aqi_gauge(aqi_sel, cat_sel)
 
-def plot_aqi_time():
-    fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(df_forecast.index, df_forecast["AQI"])
-    ax.set_xlabel("Ngày")
-    ax.set_ylabel("AQI")
-    ax.set_title("AQI dự báo theo thời gian")
-    st.pyplot(fig)
+    with c_sel2:
+        st.subheader(f"Dự báo chi tiết: {selected_date.strftime('%d/%m/%Y')}")
+        tile1, tile2, tile3 = st.columns(3)
+        tile1.metric("PM2.5 dự báo", f"{pm_selected:.2f}", help="µg/m³")
+        tile2.metric("Cận dưới (95%)", f"{lo_selected:.2f}")
+        tile3.metric("Cận trên (95%)", f"{hi_selected:.2f}")
 
+        icon = aqi_icon(cat_sel)
+        st.metric("AQI", f"{icon} {aqi_sel} ({cat_sel})")
 
-# ==========================
-# 9. Nội dung MAIN theo menu sidebar
-# ==========================
-if view_mode == "Tổng quan":
-    st.subheader("Tổng quan dự báo")
-    plot_forecast_main()
-    plot_aqi_time()
+        st.markdown("**Khuyến nghị:**")
+        if cat_sel == "Tốt":
+            st.success("Không khí trong lành. Có thể tự do hoạt động ngoài trời.")
+        elif cat_sel == "Trung bình":
+            st.warning("Nhóm nhạy cảm nên hạn chế hoạt động mạnh ngoài trời.")
+        else:
+            st.error("Nên đeo khẩu trang và hạn chế ở ngoài trời quá lâu.")
 
-    # Thông tin tổng quan + ngày được chọn
-    st.markdown(
-        f"- Model đang dự báo **{len(preds)} ngày**.\n"
-        f"- Ngày đầu tiên dự báo: **{ngay_dau.date()}**, mức chất lượng không khí **{cat_dau}** (AQI ≈ {aqi_dau})."
-    )
-
-    st.subheader(f"Dự báo chi tiết cho ngày {selected_date.date()}")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("PM2.5", f"{pm_selected:.2f} µg/m³")
-    c2.metric("CI thấp", f"{lo_selected:.2f}")
-    c3.metric("CI cao", f"{hi_selected:.2f}")
-    st.metric("AQI", f"{aqi_sel} ({cat_sel})")
-
-    st.dataframe(df_forecast)
-
-elif view_mode == "Đánh giá mô hình":
-    st.subheader("Đánh giá mô hình trên khoảng dự báo")
-    if (mae is not None) and (rmse is not None):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric("MAE", f"{mae:.3f}")
-        with c2:
-            st.metric("RMSE", f"{rmse:.3f}")
-    plot_compare()
+# --- TAB 3: ĐÁNH GIÁ MÔ HÌNH ---
+with tab_eval:
+    if has_pm25 and (mae is not None) and (rmse is not None):
+        st.subheader("Đánh giá độ chính xác mô hình")
+        m1, m2 = st.columns(2)
+        m1.metric("MAE", f"{mae:.3f}")
+        m2.metric("RMSE", f"{rmse:.3f}")
+        plot_compare_interactive(y_true, y_pred)
+    elif has_pm25:
+        st.warning(
+            "Khoảng thời gian dự báo chưa có dữ liệu PM2.5 thực tế để so sánh."
+        )
+    else:
+        st.info(
+            "Dữ liệu đầu vào không có cột PM25 thực tế nên không thể đánh giá sai số."
+        )
