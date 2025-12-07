@@ -1,0 +1,51 @@
+{
+  "order": [
+    1,
+    1,
+    2
+  ],
+  "seasonal_order": [
+    0,
+    0,
+    1,
+    7
+  ],
+  "transform": "log",
+  "lam": null,
+  "exog_cols": [
+    "PM10",
+    "NO2",
+    "SO2",
+    "pressure",
+    "temperature",
+    "wind_speed",
+    "humidity",
+    "rain",
+    "rain_hours",
+    "pressure_lag1",
+    "temperature_lag1",
+    "humidity_lag1",
+    "PM10_lag1"
+  ],
+  "train_until": "2025-01-29",
+  "test_metrics": {
+    "mae": 19.794467078288992,
+    "rmse": 23.325436948736204,
+    "mape": 24.500177640900525,
+    "test_size_days": 30,
+    "test_start": "2024-12-31",
+    "test_end": "2025-01-29"
+  },
+  "updated_at": "2025-12-06 14:51:04",
+  "weekly_eval": {
+    "horizon_days": 7,
+    "step_days": 7,
+    "start_eval": "2025-01-01",
+    "end_eval": "2025-10-31",
+    "metrics": {
+      "mae": 11.54058703017748,
+      "rmse": 16.499456470823706,
+      "mape": 23.761661723088924
+    }
+  }
+}

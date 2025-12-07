@@ -1,12 +1,12 @@
-# src/utils_pm25.py
+
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 
-# ==========================
+
 # 1. Biến ngày nghỉ / ngày lễ
-# ==========================
+
 
 holiday_periods = {
     # 2023
@@ -27,9 +27,9 @@ holiday_periods = {
 }
 
 
-# ==========================
+
 # 2. Hàm xử lý PM2.5 theo ngày
-# ==========================
+
 def build_pm25_daily(df: pd.DataFrame) -> pd.Series:
     """
     Đầu vào: df raw có cột 'Local Time' và 'PM25'
@@ -44,29 +44,48 @@ def build_pm25_daily(df: pd.DataFrame) -> pd.Series:
     return pm25
 
 
-# ==========================
+
 # 3. Hàm build exog daily
-# ==========================
+
 def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.DataFrame:
     df = df.copy()
+
+    # Bảo đảm Local Time tồn tại
     df["Local Time"] = pd.to_datetime(df["Local Time"])
     df = df.set_index("Local Time").sort_index()
 
-    exog_df = pd.DataFrame(index=index_target)  # index ngày
+    # Tạo exog theo ngày với index đúng
+    exog_df = pd.DataFrame(index=index_target)
 
-    # 3.1 Pollutant: mean theo ngày
+    # ===== 1) Pollutants =====
     if "PM10" in df.columns:
-        exog_df["PM10"] = df["PM10"].resample("D").mean().reindex(exog_df.index)
+        exog_df["PM10"] = df["PM10"].resample("D").mean().reindex(index_target)
     if "NO2" in df.columns:
-        exog_df["NO2"] = df["NO2"].resample("D").mean().reindex(exog_df.index)
+        exog_df["NO2"] = df["NO2"].resample("D").mean().reindex(index_target)
     if "SO2" in df.columns:
-        exog_df["SO2"] = df["SO2"].resample("D").mean().reindex(exog_df.index)
+        exog_df["SO2"] = df["SO2"].resample("D").mean().reindex(index_target)
 
-    # 3.2 Thời tiết: pressure (nếu cần thêm temperature, wind... thì bổ sung ở đây)
+    # ===== 2) Weather features =====
     if "Pressure" in df.columns:
-        exog_df["pressure"] = df["Pressure"].resample("D").mean().reindex(exog_df.index)
+        exog_df["pressure"] = df["Pressure"].resample("D").mean().reindex(index_target)
 
-    # 3.3 Cờ weekend / holiday
+    if "Temperature" in df.columns:
+        exog_df["temperature"] = df["Temperature"].resample("D").mean().reindex(index_target)
+
+    if "Wind Speed" in df.columns:
+        exog_df["wind_speed"] = df["Wind Speed"].resample("D").mean().reindex(index_target)
+
+    if "Relative Humidity" in df.columns:
+        exog_df["humidity"] = df["Relative Humidity"].resample("D").median().reindex(index_target)
+
+    if "Precipitation" in df.columns:
+        # Tổng lượng mưa
+        exog_df["rain"] = df["Precipitation"].resample("D").sum().reindex(index_target)
+        # Giờ mưa
+        rain_flag = (df["Precipitation"] > 0).astype(int)
+        exog_df["rain_hours"] = rain_flag.resample("D").sum().reindex(index_target)
+
+    # ===== 3) Weekend & Holiday =====
     exog_df["IsWeekend"] = exog_df.index.dayofweek.isin([5, 6]).astype(int)
 
     exog_df["IsHoliday"] = 0
@@ -76,29 +95,32 @@ def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.Dat
         mask = (exog_df.index >= start_dt) & (exog_df.index <= end_dt)
         exog_df.loc[mask, "IsHoliday"] = 1
 
-    # 3.4 Lag cho pressure và PM10
-    if "pressure" in exog_df.columns:
-        exog_df["pressure_lag1"] = exog_df["pressure"].shift(1)
-    if "PM10" in exog_df.columns:
-        exog_df["PM10_lag1"] = exog_df["PM10"].shift(1)
-
-    # 3.5 Lag cho holiday
     exog_df["IsHoliday_lag1"] = exog_df["IsHoliday"].shift(1).fillna(0)
     exog_df["IsHoliday_lag2"] = exog_df["IsHoliday"].shift(2).fillna(0)
 
-    # 3.6 Dọn missing
-    exog_df = exog_df.replace([np.inf, -np.inf], np.nan)
-    exog_df = exog_df.fillna(method="bfill").fillna(method="ffill")
+    # ===== 4) Lag-1 cho tất cả biến numeric =====
+    lag_base_cols = [
+        c for c in exog_df.columns
+        if c not in ["IsWeekend", "IsHoliday", "IsHoliday_lag1", "IsHoliday_lag2"]
+    ]
 
-    # đảm bảo freq là D
+    for c in lag_base_cols:
+        exog_df[f"{c}_lag1"] = exog_df[c].shift(1)
+
+    # ===== 5) Làm sạch dữ liệu =====
+    exog_df = exog_df.replace([np.inf, -np.inf], np.nan)
+    exog_df = exog_df.fillna(method='bfill').fillna(method='ffill')
+
+    # Tần suất ngày
     exog_df = exog_df.asfreq("D")
 
     return exog_df
 
 
-# ==========================
+
+
 # 4. Scale exog theo scaler đã fit
-# ==========================
+
 def scale_exog(exog_df: pd.DataFrame, scaler, exog_cols) -> pd.DataFrame:
     """
     Lấy đúng các cột exog_cols, scale bằng scaler (StandardScaler đã fit khi train).
@@ -112,9 +134,9 @@ def scale_exog(exog_df: pd.DataFrame, scaler, exog_cols) -> pd.DataFrame:
     return exog_scaled
 
 
-# ==========================
+
 # 5. Transform / Inverse-transform
-# ==========================
+
 def transform_series(s: pd.Series, method="identity"):
     s = pd.Series(s).astype(float)
 

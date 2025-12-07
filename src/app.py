@@ -1,538 +1,439 @@
-# src/app.py
-import json
 from pathlib import Path
-import zipfile 
+from datetime import datetime
 
-import joblib
 import numpy as np
 import pandas as pd
-import streamlit as st
 import plotly.graph_objects as go
+import plotly.express as px
+import streamlit as st
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from utils_pm25 import (
-    build_pm25_daily,
-    build_exog_daily,
-    scale_exog,
-    inv_transform,
+# ==================== PAGE CONFIG ====================
+
+st.set_page_config(
+    page_title="Dashboard Chất lượng Không khí - Hà Nội",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# ==========================
-# 0. Hàm chuyển PM2.5 -> AQI + mức (nội suy)
-# ==========================
-def pm25_to_aqi(pm: float):
-    # (C_lo, C_hi, I_lo, I_hi, category)
-    BREAKPOINTS_PM25 = [
-        (0.0,    9.0,    0,   50,  "Tốt"),
-        (9.1,    35.4,   51,  100, "Trung bình"),
-        (35.5,   55.4,   101, 150, "Không tốt cho nhóm nhạy cảm"),
-        (55.5,   125.4,  151, 200, "Kém"),
-        (125.5,  225.4,  201, 300, "Rất kém"),
-        (225.5,  500.0,  301, 500, "Nguy hại"),
-    ]
+# ==================== CONSTANTS ====================
 
-    C = float(pm)
+WHO_PM25_THRESHOLD = 35.4  # µg/m³
 
-    # Kẹp C trong khoảng cho phép
-    if C < BREAKPOINTS_PM25[0][0]:
-        C = BREAKPOINTS_PM25[0][0]
-    if C > BREAKPOINTS_PM25[-1][1]:
-        C = BREAKPOINTS_PM25[-1][1]
+AQI_LEVELS = [
+    {"range": (0, 50), "label": "Tốt", "color": "#66cc66", "bg": "#d4edda", 
+     "advice": "Chất lượng không khí tốt. Hoạt động ngoài trời bình thường."},
+    {"range": (51, 100), "label": "Trung bình", "color": "#eec900", "bg": "#fff8e1",
+     "advice": "Chất lượng chấp nhận được. Nhóm nhạy cảm nên hạn chế hoạt động ngoài trời kéo dài."},
+    {"range": (101, 150), "label": "Không tốt cho nhóm nhạy cảm", "color": "#FF7F24", "bg": "#ffe5d0",
+     "advice": "Trẻ em, người già, người có bệnh hô hấp nên hạn chế ra ngoài."},
+    {"range": (151, 200), "label": "Kém", "color": "#CD2626", "bg": "#f8d7da",
+     "advice": "Mọi người có thể bị ảnh hưởng. Hạn chế hoạt động ngoài trời."},
+    {"range": (201, 300), "label": "Rất kém", "color": "#CD2626", "bg": "#f8d7da",
+     "advice": "Cảnh báo sức khỏe. Tránh hoạt động ngoài trời, đeo khẩu trang."},
+    {"range": (301, 500), "label": "Nguy hiểm", "color": "#b03060", "bg": "#d4a5a5",
+     "advice": "Nguy hiểm! Ở trong nhà, đóng cửa sổ, sử dụng máy lọc không khí."},
+]
 
-    for C_lo, C_hi, I_lo, I_hi, cat in BREAKPOINTS_PM25:
-        if C_lo <= C <= C_hi:
-            aqi = (I_hi - I_lo) / (C_hi - C_lo) * (C - C_lo) + I_lo
-            return cat, int(round(aqi))
-
-    # Fallback nếu có gì đó lạ
-    return "Không xác định", 0
+AQI_BREAKPOINTS = [
+    (0.0, 12.0, 0, 50),
+    (12.1, 35.4, 51, 100),
+    (35.5, 55.4, 101, 150),
+    (55.5, 150.4, 151, 200),
+    (150.5, 250.4, 201, 300),
+    (250.5, 500.0, 301, 500),
+]
 
 
-def aqi_icon(cat: str) -> str:
-    """Trả về icon đơn giản theo mức AQI."""
-    if cat == "Tốt":
-        return "🟢"
-    if cat == "Trung bình":
-        return "🟡"
-    if cat.startswith("Không tốt"):
-        return "🟠"
-    if cat in ["Kém", "Rất kém"]:
-        return "🔴"
-    if cat == "Nguy hại":
-        return "🟥"
-    return "🟣"
+# ==================== HELPER FUNCTIONS ====================
 
-
-# ==========================
-# 1. Load model + scaler + config
-# ==========================
-@st.cache_resource
-def load_model_and_cfg():
-    base_dir = Path(__file__).resolve().parent  # src/
-    model_dir = base_dir.parent / "models"      # ../models
-
+def pm25_to_aqi(pm25: float) -> tuple[int, str, dict]:
+    """Chuyển đổi PM2.5 sang (AQI, label, level_info)."""
+    value = max(0.0, min(float(pm25), 500.0))
     
-    scaler = joblib.load(model_dir / "exog_scaler.pkl")
+    for c_lo, c_hi, i_lo, i_hi in AQI_BREAKPOINTS:
+        if c_lo <= value <= c_hi:
+            aqi = int(round((i_hi - i_lo) / (c_hi - c_lo) * (value - c_lo) + i_lo))
+            for level in AQI_LEVELS:
+                if level["range"][0] <= aqi <= level["range"][1]:
+                    return aqi, level["label"], level
+            break
     
-    zipped = model_dir / "sarimax_pm25.zip"
-    pkl_file = model_dir / "sarimax_pm25.pkl"
-
-    # Nếu file .pkl chưa được giải nén → giải nén nó
-    if zipped.exists() and not pkl_file.exists():
-        with zipfile.ZipFile(zipped, 'r') as zip_ref:
-            zip_ref.extractall(model_dir)
-
-    model = joblib.load(pkl_file)
-    scaler = joblib.load(model_dir / "exog_scaler.pkl")
-
-    with open(model_dir / "config_pm25.json", "r", encoding="utf-8") as f:
-        cfg = json.load(f)
-
-    return model, scaler, cfg
+    return 0, "N/A", AQI_LEVELS[0]
 
 
-# ==========================
-# 1.b Dữ liệu CSV mặc định
-# ==========================
-@st.cache_data
-def load_default_csv():
-    """
-    Đọc file CSV mặc định để dùng khi user không upload gì.
-    Đặt file ở: ../data/data_test.csv (so với src/app.py)
-    """
-    base_dir = Path(__file__).resolve().parent  # src/
-    data_dir = base_dir.parent / "data"         # ../data
-    df = pd.read_csv(data_dir / "data_test.csv")
+def compute_metrics(df: pd.DataFrame) -> dict:
+    """Tính các chỉ số đánh giá mô hình."""
+    y_true, y_pred = df["actual"], df["predicted"]
+    
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - y_true.mean()) ** 2)
+    r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else np.nan
+    
+    mape = np.mean(np.abs((y_true - y_pred) / np.clip(y_true, 1e-6, None))) * 100
+    
+    return {
+        "mae": mae, "rmse": rmse, "r2": r2, "mape": mape,
+        "avg_actual": y_true.mean(), "avg_pred": y_pred.mean(),
+        "max": y_true.max(), "min": y_true.min(),
+        "count": len(df),
+    }
+
+
+def add_aqi_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Thêm cột AQI vào DataFrame."""
+    df = df.copy()
+    df["AQI_actual"] = df["actual"].apply(lambda v: pm25_to_aqi(v)[0])
+    df["AQI_pred"] = df["predicted"].apply(lambda v: pm25_to_aqi(v)[0])
     return df
 
 
-# ==========================
-# 2. Cấu hình page
-# ==========================
-st.set_page_config(
-    page_title="PM2.5 Forecast - SARIMAX",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+# ==================== DATA LOADING ====================
 
-# Ẩn header/menu/footer Streamlit cho giao diện “dashboard” sạch hơn
-hide_streamlit_style = """
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-</style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+@st.cache_data
+def load_data() -> pd.DataFrame | None:
+    """Load kết quả rolling forecast."""
+    path = Path(__file__).resolve().parent.parent / "models" / "weekly_eval_results.csv"
+    
+    if not path.exists():
+        return None
+    
+    df = pd.read_csv(path)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "train_end" in df.columns:
+        df["train_end"] = pd.to_datetime(df["train_end"], errors="coerce")
+    
+    return df.sort_values("date")
 
-model, scaler, cfg = load_model_and_cfg()
 
-# ==========================
-# SIDEBAR - chọn nguồn dữ liệu + info model
-# ==========================
-with st.sidebar:
-    st.subheader("Nguồn dữ liệu")
+# ==================== CHART COMPONENTS ====================
 
-    input_mode = st.radio(
-        "Chọn nguồn dữ liệu",
-        ["Dữ liệu mẫu có sẵn", "Upload file CSV"],
-    )
-
-    uploaded = None
-    if input_mode == "Upload file CSV":
-        uploaded = st.file_uploader(
-            "Upload dữ liệu (CSV)",
-            type=["csv"],
-            help="File có schema giống dữ liệu train (có cột Local Time, PM25, ...)",
-        )
-
-    with st.expander("Thông tin mô hình"):
-        st.write(f"**ARIMA order**: `{cfg['order']}`")
-        st.write(f"**Seasonal order**: `{cfg['seasonal_order']}`")
-        st.write("**Biến exog sử dụng:**")
-        st.code(", ".join(cfg["exog_cols"]), language="markdown")
-
-st.title("Dự báo chất lượng không khí bằng mô hình SARIMAX")
-
-# ==========================
-# 3. Lấy dữ liệu đầu vào (default hoặc upload)
-# ==========================
-if input_mode == "Upload file CSV":
-    if uploaded is None:
-        st.warning("Hãy upload file CSV hoặc chọn 'Dữ liệu mẫu có sẵn'.")
-        st.stop()
-    df_new = pd.read_csv(uploaded)
-    data_source = f"File upload: {uploaded.name}"
-else:
-    df_new = load_default_csv()
-    data_source = "Dữ liệu mẫu có sẵn (data_test.csv)"
-
-st.caption(f"Đang dùng {data_source}")
-
-# ==========================
-# 4. Xử lý dữ liệu theo ngày
-# ==========================
-has_pm25 = "PM25" in df_new.columns
-
-# Nếu không có PM25 thì vẫn cần Local Time để tạo index ngày
-if not has_pm25 and "Local Time" not in df_new.columns:
-    st.error(
-        "File CSV cần có cột 'PM25' hoặc ít nhất cột 'Local Time' "
-        "để có thể xây dựng chuỗi thời gian theo ngày."
-    )
-    st.stop()
-
-if has_pm25:
-    pm25_daily = build_pm25_daily(df_new)
-else:
-    df_new["Local Time"] = pd.to_datetime(df_new["Local Time"])
-    idx_daily = (
-        df_new
-        .set_index("Local Time")
-        .sort_index()
-        .resample("D")
-        .mean()
-        .index
-    )
-    pm25_daily = pd.Series(index=idx_daily, dtype=float)
-
-# 4.1 Xây exog theo ngày, align với index PM25
-exog_daily = build_exog_daily(df_new, pm25_daily.index)
-
-# 4.2 Lấy đúng các cột exog_cols từ config
-exog_cols = cfg["exog_cols"]
-missing_cols = [c for c in exog_cols if c not in exog_daily.columns]
-if missing_cols:
-    st.error(f"Thiếu các cột exog trong exog_daily: {missing_cols}")
-    st.stop()
-else:
-    exog_scaled = scale_exog(exog_daily, scaler, exog_cols)
-
-# ==========================
-# 5. Forecast với SARIMAX (dự báo tương lai)
-# ==========================
-train_idx = pd.to_datetime(model.model.data.row_labels)
-last_train_date = train_idx[-1]
-st.write("Model được train tới ngày:", last_train_date.date())
-
-# Chỉ lấy exog các ngày sau khi train xong
-exog_future = exog_scaled[exog_scaled.index > last_train_date]
-
-if exog_future.empty:
-    st.error(
-        "Dữ liệu không có ngày nào sau thời điểm model được train, "
-        "nên không có gì để dự báo."
-    )
-    st.stop()
-else:
-    max_horizon = min(90, len(exog_future))
-    default_H = min(30, max_horizon)
-
-    # Slider trong sidebar: thiết lập forecast horizon
-    with st.sidebar:
-        st.subheader("Thiết lập dự báo")
-        H = st.slider(
-            "Số ngày dự báo",
-            min_value=1,
-            max_value=max_horizon,
-            value=default_H,
-        )
-
-    exog_future = exog_future.iloc[:H]
-
-    fc = model.get_forecast(steps=len(exog_future), exog=exog_future)
-
-    preds_tf = fc.predicted_mean
-    ci = fc.conf_int(alpha=0.05)
-    lo_tf = ci.iloc[:, 0]
-    hi_tf = ci.iloc[:, 1]
-
-    # Inverse transform
-    preds = inv_transform(
-        preds_tf,
-        method=cfg["transform"],
-        lam=cfg["lam"],
-    )
-    lo = inv_transform(
-        lo_tf,
-        method=cfg["transform"],
-        lam=cfg["lam"],
-    )
-    hi = inv_transform(
-        hi_tf,
-        method=cfg["transform"],
-        lam=cfg["lam"],
-    )
-
-    preds.index = exog_future.index
-    lo.index = exog_future.index
-    hi.index = exog_future.index
-
-# ==========================
-# 6. Chuẩn bị đánh giá + AQI
-# ==========================
-mae = None
-rmse = None
-y_true = None
-y_pred = None
-
-if has_pm25:
-    from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-    y_true = pm25_daily.reindex(exog_future.index)
-    y_pred = preds.reindex(exog_future.index)
-    mask = ~(y_true.isna() | y_pred.isna())
-    if mask.sum() > 0:
-        mae = mean_absolute_error(y_true[mask], y_pred[mask])
-        rmse = np.sqrt(mean_squared_error(y_true[mask], y_pred[mask]))
-
-df_forecast = pd.DataFrame({"PM25_pred": preds})
-cats = []
-aqis = []
-for v in df_forecast["PM25_pred"]:
-    cat, aqi = pm25_to_aqi(float(v))
-    cats.append(cat)
-    aqis.append(aqi)
-df_forecast["AQI"] = aqis
-df_forecast["Mức"] = cats
-
-# Chỉ số AQI tổng quan trên cả dải dự báo
-aqi_series = df_forecast["AQI"]
-aqi_mean = aqi_series.mean()
-aqi_max = aqi_series.max()
-cat_max, _ = pm25_to_aqi(aqi_max)
-
-# Chọn 1 ngày bất kỳ để xem chi tiết
-with st.sidebar:
-    st.subheader("Xem dự báo theo ngày")
-    selected_date = st.selectbox(
-        "Chọn ngày dự báo",
-        options=list(preds.index),
-        format_func=lambda d: d.strftime("%Y-%m-%d"),
-    )
-
-pm_selected = preds.loc[selected_date]
-lo_selected = lo.loc[selected_date]
-hi_selected = hi.loc[selected_date]
-cat_sel, aqi_sel = pm25_to_aqi(float(pm_selected))
-
-# Ngày đầu tiên dãy dự báo (giữ lại cho phần summary)
-ngay_dau = preds.index[0]
-pm_dau = preds.iloc[0]
-cat_dau, aqi_dau = pm25_to_aqi(float(pm_dau))
-
-# ==========================
-# 8. Các hàm vẽ biểu đồ (Plotly)
-# ==========================
-def plot_forecast_interactive(preds, lo, hi):
-    """Vẽ biểu đồ dự báo tương tác với Plotly."""
-    fig = go.Figure()
-
-    # CI trên
-    fig.add_trace(go.Scatter(
-        x=preds.index,
-        y=hi,
-        mode="lines",
-        line=dict(width=0),
-        showlegend=False,
-        hoverinfo="skip",
-        name="CI trên",
+def create_aqi_gauge(pm25_value: float, title: str) -> go.Figure:
+    """Tạo gauge chart AQI."""
+    aqi, label, level = pm25_to_aqi(pm25_value)
+    
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=aqi,
+        title={"text": f"<b>{title}</b><br><span style='font-size:16px;color:{level['color']}'>{label}</span>"},
+        gauge={
+            "axis": {"range": [0, 500], "tickwidth": 2, "tickcolor": "gray"},
+            "bar": {"color": level["color"], "thickness": 0.3},
+            "bgcolor": "white",
+            "borderwidth": 2,
+            "bordercolor": "gray",
+            "steps": [
+                {"range": [0, 50], "color": "#66cc66"},
+                {"range": [50, 100], "color": "#eec900"},
+                {"range": [100, 150], "color": "#FF7F24"},
+                {"range": [150, 200], "color": "#f8d7da"},
+                {"range": [200, 300], "color": "#CD2626"},
+                {"range": [300, 500], "color": "#b03060"}, 
+            ],
+            "threshold": {
+                "line": {"color": level["color"], "width": 6},
+                "thickness": 0.8,
+                "value": aqi,
+            },
+        },
     ))
-
-    # CI dưới + fill
-    fig.add_trace(go.Scatter(
-        x=preds.index,
-        y=lo,
-        mode="lines",
-        line=dict(width=0),
-        fill="tonexty",
-        fillcolor="rgba(0, 100, 255, 0.1)",
-        name="Khoảng tin cậy 95%",
-        hoverinfo="skip",
-    ))
-
-    # Đường dự báo
-    fig.add_trace(go.Scatter(
-        x=preds.index,
-        y=preds,
-        mode="lines+markers",
-        name="Dự báo PM2.5",
-        line=dict(color="#1f77b4", width=3),
-        marker=dict(size=5),
-    ))
-
-    # Vạch ngưỡng nhạy cảm
-    fig.add_hline(
-        y=35.4,
-        line_dash="dot",
-        line_color="orange",
-        annotation_text="Ngưỡng nhạy cảm 35.4",
-    )
-
+    
     fig.update_layout(
-        title="Dự báo nồng độ PM2.5 theo thời gian",
-        xaxis_title="Ngày",
-        yaxis_title="Nồng độ PM2.5 (µg/m³)",
-        hovermode="x unified",
-        template="plotly_white",
-        height=420,
+        height=280,
+        margin=dict(l=30, r=30, t=80, b=30),
+        paper_bgcolor="rgba(0,0,0,0)",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    return fig
 
 
-def plot_compare_interactive(y_true, y_pred):
-    """So sánh thực tế vs dự báo bằng Plotly."""
-    if (y_true is None) or (y_pred is None):
-        st.info("Không có dữ liệu PM2.5 thực tế để so sánh.")
-        return
-
+def create_pm25_chart(df: pd.DataFrame, title: str) -> go.Figure:
+    """Biểu đồ PM2.5 theo thời gian."""
     fig = go.Figure()
-
+    
+    # Area fill for actual
     fig.add_trace(go.Scatter(
-        x=y_true.index,
-        y=y_true,
+        x=df["date"], y=df["actual"],
         mode="lines",
         name="Thực tế",
-        line=dict(color="green"),
+        line=dict(color="#2e7d32", width=2),
+        fill="tozeroy",
+        fillcolor="rgba(46, 125, 50, 0.1)",
     ))
-
+    
+    # Predicted line
     fig.add_trace(go.Scatter(
-        x=y_pred.index,
-        y=y_pred,
-        mode="lines",
-        name="Dự báo",
-        line=dict(color="red", dash="dash"),
+        x=df["date"], y=df["predicted"],
+        mode="lines+markers",
+        name="Dự báo SARIMAX",
+        line=dict(color="#ef6c00", width=2, dash="dot"),
+        marker=dict(size=4),
     ))
-
+    
+    # WHO threshold
+    fig.add_hline(y=WHO_PM25_THRESHOLD, line_dash="dash", line_color="red",
+                  annotation_text="Ngưỡng WHO (35.4)", annotation_position="top left")
+    
     fig.update_layout(
-        title="So sánh PM2.5: Thực tế vs Dự báo",
+        title=dict(text=title, font=dict(size=16)),
         xaxis_title="Ngày",
         yaxis_title="PM2.5 (µg/m³)",
         hovermode="x unified",
         template="plotly_white",
-        height=420,
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    return fig
 
 
-def plot_aqi_gauge(aqi_val, cat_val):
-    """Vẽ đồng hồ đo AQI."""
-    color_map = {
-        "Tốt": "green",
-        "Trung bình": "yellow",
-        "Không tốt cho nhóm nhạy cảm": "orange",
-        "Kém": "red",
-        "Rất kém": "purple",
-        "Nguy hại": "maroon",
-    }
-    color = color_map.get(cat_val, "grey")
-
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number+delta",
-        value=aqi_val,
-        domain={"x": [0, 1], "y": [0, 1]},
-        title={"text": f"<b>AQI: {cat_val}</b>"},
-        delta={
-            "reference": 50,
-            "increasing": {"color": "red"},
-            "decreasing": {"color": "green"},
-        },
-        gauge={
-            "axis": {"range": [0, 500]},
-            "bar": {"color": color},
-            "steps": [
-                {"range": [0, 50], "color": "#e6f5e6"},
-                {"range": [50, 100], "color": "#ffffe0"},
-                {"range": [100, 150], "color": "#ffebcc"},
-                {"range": [150, 200], "color": "#ffcccc"},
-                {"range": [200, 300], "color": "#e6ccff"},
-                {"range": [300, 500], "color": "#660000"},
-            ],
-        },
+def create_aqi_chart(df: pd.DataFrame) -> go.Figure:
+    """Biểu đồ AQI theo thời gian với vùng màu."""
+    df_aqi = add_aqi_columns(df)
+    
+    fig = go.Figure()
+    
+    # Background zones
+    for level in AQI_LEVELS[:4]:  # Only show first 4 levels
+        fig.add_hrect(
+            y0=level["range"][0], y1=level["range"][1],
+            fillcolor=level["color"], opacity=0.1, line_width=0,
+        )
+    
+    fig.add_trace(go.Scatter(
+        x=df_aqi["date"], y=df_aqi["AQI_actual"],
+        mode="lines+markers",
+        name="AQI Thực tế",
+        line=dict(color="#2e7d32", width=2),
+        marker=dict(size=4),
     ))
-    fig.update_layout(height=260, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# ==========================
-# 9. Nội dung MAIN – dùng Tabs
-# ==========================
-tab_overview, tab_detail, tab_eval = st.tabs(
-    [" Tổng quan", " Chi tiết ngày", "Đánh giá mô hình"]
-)
-
-# --- TAB 1: TỔNG QUAN ---
-with tab_overview:
-    st.subheader(f"Dự báo {len(preds)} ngày tới (từ {ngay_dau.date()})")
-
-    cols = st.columns(4)
-    with cols[0]:
-        st.metric("AQI trung bình", f"{aqi_mean:.0f}")
-    with cols[1]:
-        delta_max = aqi_max - aqi_mean
-        st.metric(
-            "AQI cao nhất",
-            f"{aqi_max:.0f}",
-            delta=f"{delta_max:+.0f}",
-            help=f"Mức: {cat_max}",
-        )
-    with cols[2]:
-        st.metric("PM2.5 trung bình", f"{preds.mean():.2f} µg/m³")
-    with cols[3]:
-        if mae is not None:
-            st.metric("Sai số MAE", f"{mae:.2f}")
-        else:
-            st.metric("Sai số MAE", "N/A")
-
-    st.markdown(
-        f"- Ngày đầu tiên dự báo: **{ngay_dau.date()}**, AQI khoảng **{aqi_dau} ({cat_dau})**."
+    
+    fig.add_trace(go.Scatter(
+        x=df_aqi["date"], y=df_aqi["AQI_pred"],
+        mode="lines+markers",
+        name="AQI Dự báo",
+        line=dict(color="#ef6c00", width=2, dash="dot"),
+        marker=dict(size=4),
+    ))
+    
+    fig.update_layout(
+        title="Chỉ số AQI theo thời gian",
+        xaxis_title="Ngày",
+        yaxis_title="AQI",
+        yaxis=dict(range=[0, max(200, df_aqi["AQI_actual"].max() + 20)]),
+        hovermode="x unified",
+        template="plotly_white",
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center"),
     )
+    return fig
 
-    plot_forecast_interactive(preds, lo, hi)
 
-    with st.expander("Xem bảng dữ liệu dự báo"):
-        st.dataframe(
-            df_forecast,
-            use_container_width=True,
+
+def create_error_histogram(df: pd.DataFrame) -> go.Figure:
+    """Histogram phân phối sai số."""
+    error = df["predicted"] - df["actual"]
+    
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=error,
+        nbinsx=30,
+        marker_color="#5c6bc0",
+        opacity=0.8,
+    ))
+    
+    fig.add_vline(x=0, line_dash="dash", line_color="red", line_width=2)
+    fig.add_vline(x=error.mean(), line_dash="dot", line_color="green",
+                  annotation_text=f"Mean: {error.mean():.1f}")
+    
+    fig.update_layout(
+        title="Phân phối sai số dự báo",
+        xaxis_title="Sai số (µg/m³)",
+        yaxis_title="Tần suất",
+        template="plotly_white",
+        height=350,
+    )
+    return fig
+
+
+
+
+# ==================== MAIN APP ====================
+
+def main():
+    # Header
+    st.markdown("""
+    <h1 style='text-align: center; color: #1e3a5f;'>
+         Dự báo chất lượng không khí
+    </h1>
+    <p style='text-align: center; color: #666; margin-bottom: 30px;'>
+        Hà Nội | Mô hình SARIMAX với Rolling Forecast
+    </p>
+    """, unsafe_allow_html=True)
+    
+    # Load data
+    df_all = load_data()
+    if df_all is None or df_all.empty:
+        st.error(" Chưa có dữ liệu. Chạy: `python train_sarimax.py`")
+        st.stop()
+    
+    # ========== SIDEBAR ==========
+    with st.sidebar:
+        st.header(" Chọn ngày")
+        
+        min_date = df_all["date"].min().date()
+        max_date = df_all["date"].max().date()
+        
+        selected_date = st.date_input(
+            "Chọn ngày",
+            value=max_date,
+            min_value=min_date,
+            max_value=max_date,
         )
-
-# --- TAB 2: CHI TIẾT NGÀY ---
-with tab_detail:
-    c_sel1, c_sel2 = st.columns([1, 2])
-    with c_sel1:
-        st.info("Chọn ngày cần xem chi tiết ở Sidebar.")
-        plot_aqi_gauge(aqi_sel, cat_sel)
-
-    with c_sel2:
-        st.subheader(f"Dự báo chi tiết: {selected_date.strftime('%d/%m/%Y')}")
-        tile1, tile2, tile3 = st.columns(3)
-        tile1.metric("PM2.5 dự báo", f"{pm_selected:.2f}", help="µg/m³")
-        tile2.metric("Cận dưới (95%)", f"{lo_selected:.2f}")
-        tile3.metric("Cận trên (95%)", f"{hi_selected:.2f}")
-
-        icon = aqi_icon(cat_sel)
-        st.metric("AQI", f"{icon} {aqi_sel} ({cat_sel})")
-
-        st.markdown("**Khuyến nghị:**")
-        if cat_sel == "Tốt":
-            st.success("Không khí trong lành. Có thể tự do hoạt động ngoài trời.")
-        elif cat_sel == "Trung bình":
-            st.warning("Nhóm nhạy cảm nên hạn chế hoạt động mạnh ngoài trời.")
-        else:
-            st.error("Nên đeo khẩu trang và hạn chế ở ngoài trời quá lâu.")
-
-# --- TAB 3: ĐÁNH GIÁ MÔ HÌNH ---
-with tab_eval:
-    if has_pm25 and (mae is not None) and (rmse is not None):
-        st.subheader("Đánh giá độ chính xác mô hình")
-        m1, m2 = st.columns(2)
-        m1.metric("MAE", f"{mae:.3f}")
-        m2.metric("RMSE", f"{rmse:.3f}")
-        plot_compare_interactive(y_true, y_pred)
-    elif has_pm25:
-        st.warning(
-            "Khoảng thời gian dự báo chưa có dữ liệu PM2.5 thực tế để so sánh."
+        
+        # Date range for charts
+        st.markdown("**Khoảng thời gian hiển thị biểu đồ:**")
+        days_range = st.slider(
+            "Số ngày trước/sau ngày được chọn",
+            min_value=0,
+            max_value=30,
+            value=7,
+            help="Chọn 0 để chỉ xem toàn bộ dữ liệu"
         )
+        
+        
+        
+        st.divider()
+        st.subheader(" Chọn chế độ xem")
+        view_option = st.radio(
+            "Hiển thị:",
+            ["PM2.5 theo thời gian", "AQI theo thời gian", "Hiệu suất mô hình", "Bảng dữ liệu"],
+            index=0
+        )
+        
+        st.divider()
+        
+        # Collapsible model info
+        with st.expander(" Thông tin", expanded=False):
+            st.markdown("""
+            - **Mô hình:** SARIMAX
+            - **Order:** (1, 1, 2)
+            - **Seasonal:** (0, 0, 1, 7)
+            - **Train:** 2023-2024
+            - **Test:** 2025
+            """)
+        # Collapsible AQI scale
+        with st.expander(" Thang AQI", expanded=False):
+            for level in AQI_LEVELS:
+                st.markdown(
+                    f"<div style='background:{level['bg']}; padding:5px 10px; border-radius:5px; margin:3px 0;'>"
+                    f"<span style='color:{level['color']}'>●</span> "
+                    f"<b>{level['range'][0]}-{level['range'][1]}</b>: {level['label']}</div>",
+                    unsafe_allow_html=True
+                )
+    
+    # Filter data for selected date
+    df_selected = df_all[df_all["date"].dt.date == selected_date]
+    
+    if df_selected.empty:
+        st.warning(f"Không có dữ liệu cho ngày {selected_date}")
+        st.stop()
+    
+    # Get data for selected date
+    row = df_selected.iloc[0]
+    pm25_actual = row["actual"]
+    pm25_pred = row["predicted"]
+    
+    aqi_actual, label_actual, level_actual = pm25_to_aqi(pm25_actual)
+    aqi_pred, label_pred, level_pred = pm25_to_aqi(pm25_pred)
+    
+    # Filter data for charts based on date range
+    if days_range > 0:
+        from datetime import timedelta
+        start_date = selected_date - timedelta(days=days_range)
+        end_date = selected_date + timedelta(days=days_range)
+        mask = (df_all["date"].dt.date >= start_date) & (df_all["date"].dt.date <= end_date)
+        df = df_all[mask].copy()
+        date_range_text = f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}"
     else:
-        st.info(
-            "Dữ liệu đầu vào không có cột PM25 thực tế nên không thể đánh giá sai số."
+        df = df_all.copy()
+        date_range_text = "Toàn bộ dữ liệu"
+    
+    # Compute metrics for filtered data
+    metrics = compute_metrics(df)
+    
+    # ========== ROW 1: AQI GAUGE + HEALTH ADVICE ==========
+    st.subheader(" Tổng quan Chất lượng Không khí")
+    
+    col1, col2 = st.columns([1, 1.5])
+    
+    with col1:
+        st.plotly_chart(create_aqi_gauge(pm25_pred, f"AQI Dự báo - {selected_date.strftime('%d/%m/%Y')}"), use_container_width=True)
+    
+    
+    with col2:
+        st.markdown(f"""
+        <div style='background:{level_pred["bg"]}; padding: 20px; border-radius: 10px; 
+                    border-left: 5px solid {level_pred["color"]}; height: 100%;'>
+            <h4 style='margin-top:0; color:{level_pred["color"]}'> Khuyến nghị</h4>
+            <p style='font-size: 15px; margin-bottom: 15px;'>{level_pred["advice"]}</p>
+            <hr>
+            <div style='display:flex; justify-content:space-between;'>
+                <div><b>PM2.5 Thực tế:</b> {pm25_actual:.1f} µg/m³</div>
+                <div><b>PM2.5 Dự báo:</b> {pm25_pred:.1f} µg/m³</div>
+                <div><b>Sai số:</b> {abs(pm25_pred - pm25_actual):.1f} µg/m³</div>
+            </div>
+            <div style='margin-top:10px;'>
+                <b>AQI Thực tế:</b> {aqi_actual} ({label_actual}) | <b>AQI Dự báo:</b> {aqi_pred} ({label_pred})
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.divider()
+    
+    # ========== DISPLAY SELECTED VIEW ==========
+    
+    if view_option == "PM2.5 theo thời gian":
+        st.plotly_chart(create_pm25_chart(df, f"PM2.5 theo thời gian ({date_range_text})"), use_container_width=True)
+    
+    elif view_option == "AQI theo thời gian":
+        st.plotly_chart(create_aqi_chart(df), use_container_width=True)
+    
+    elif view_option == "Hiệu suất mô hình":
+        st.markdown("### Các chỉ số đánh giá mô hình")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("MAE", f"{metrics['mae']:.2f} µg/m³", 
+                    help="Mean Absolute Error - Sai số tuyệt đối trung bình")
+        col2.metric("RMSE", f"{metrics['rmse']:.2f} µg/m³",
+                    help="Root Mean Square Error - Căn bậc hai sai số bình phương trung bình")
+        col3.metric("R²", f"{metrics['r2']:.3f}" if not np.isnan(metrics['r2']) else "N/A",
+                    help="Hệ số xác định - càng gần 1 càng tốt")
+        col4.metric("MAPE", f"{metrics['mape']:.1f}%",
+                    help="Mean Absolute Percentage Error - Sai số phần trăm trung bình")
+    
+    else:  # Bảng dữ liệu
+        df_display = add_aqi_columns(df)
+        df_display["error"] = (df_display["predicted"] - df_display["actual"]).round(2)
+        df_display["date_str"] = df_display["date"].dt.strftime("%Y-%m-%d")
+        
+        st.dataframe(
+            df_display[["date_str", "actual", "predicted", "error", "AQI_actual", "AQI_pred"]].rename(columns={
+                "date_str": "Ngày",
+                "actual": "PM2.5 Thực tế",
+                "predicted": "PM2.5 Dự báo",
+                "error": "Sai số",
+                "AQI_actual": "AQI Thực tế",
+                "AQI_pred": "AQI Dự báo",
+            }),
+            use_container_width=True,
+            height=400,
         )
+    
+    st.divider()
+    st.caption(f" Dữ liệu từ {min_date} đến {max_date} | Cập nhật: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+
+if __name__ == "__main__":
+    main()
