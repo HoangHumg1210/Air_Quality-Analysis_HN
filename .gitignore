@@ -1,2 +1,6 @@
 file/
 models/sarimax_pm25.pkl
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
