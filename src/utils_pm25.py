@@ -3,10 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-
-
 # 1. Biến ngày nghỉ / ngày lễ
-
 
 holiday_periods = {
     # 2023
@@ -29,12 +26,7 @@ holiday_periods = {
 
 
 # 2. Hàm xử lý PM2.5 theo ngày
-
 def build_pm25_daily(df: pd.DataFrame) -> pd.Series:
-    """
-    Đầu vào: df raw có cột 'Local Time' và 'PM25'
-    Đầu ra:  Series PM25 resample theo ngày (mean), freq='D'
-    """
     df = df.copy()
     df["Local Time"] = pd.to_datetime(df["Local Time"])
     df = df.set_index("Local Time").sort_index()
@@ -45,19 +37,14 @@ def build_pm25_daily(df: pd.DataFrame) -> pd.Series:
 
 
 
-# 3. Hàm build exog daily
-
+# 3. Tìm biến ngoại sinh
 def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.DataFrame:
     df = df.copy()
-
-    # Bảo đảm Local Time tồn tại
     df["Local Time"] = pd.to_datetime(df["Local Time"])
     df = df.set_index("Local Time").sort_index()
-
-    # Tạo exog theo ngày với index đúng
     exog_df = pd.DataFrame(index=index_target)
 
-    # ===== 1) Pollutants =====
+    
     if "PM10" in df.columns:
         exog_df["PM10"] = df["PM10"].resample("D").mean().reindex(index_target)
     if "NO2" in df.columns:
@@ -65,7 +52,7 @@ def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.Dat
     if "SO2" in df.columns:
         exog_df["SO2"] = df["SO2"].resample("D").mean().reindex(index_target)
 
-    # ===== 2) Weather features =====
+    # Thời tiết
     if "Pressure" in df.columns:
         exog_df["pressure"] = df["Pressure"].resample("D").mean().reindex(index_target)
 
@@ -85,7 +72,7 @@ def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.Dat
         rain_flag = (df["Precipitation"] > 0).astype(int)
         exog_df["rain_hours"] = rain_flag.resample("D").sum().reindex(index_target)
 
-    # ===== 3) Weekend & Holiday =====
+    # Dịp lễ và cuối tuần 
     exog_df["IsWeekend"] = exog_df.index.dayofweek.isin([5, 6]).astype(int)
 
     exog_df["IsHoliday"] = 0
@@ -98,7 +85,7 @@ def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.Dat
     exog_df["IsHoliday_lag1"] = exog_df["IsHoliday"].shift(1).fillna(0)
     exog_df["IsHoliday_lag2"] = exog_df["IsHoliday"].shift(2).fillna(0)
 
-    # ===== 4) Lag-1 cho tất cả biến numeric =====
+    # Lấy độ trễ (lag-1)
     lag_base_cols = [
         c for c in exog_df.columns
         if c not in ["IsWeekend", "IsHoliday", "IsHoliday_lag1", "IsHoliday_lag2"]
@@ -106,25 +93,14 @@ def build_exog_daily(df: pd.DataFrame, index_target: pd.DatetimeIndex) -> pd.Dat
 
     for c in lag_base_cols:
         exog_df[f"{c}_lag1"] = exog_df[c].shift(1)
-
-    # ===== 5) Làm sạch dữ liệu =====
     exog_df = exog_df.replace([np.inf, -np.inf], np.nan)
-    exog_df = exog_df.fillna(method='bfill').fillna(method='ffill')
-
-    # Tần suất ngày
+    exog_df = exog_df.bfill().ffill()
     exog_df = exog_df.asfreq("D")
-
     return exog_df
 
-
-
-
-# 4. Scale exog theo scaler đã fit
+# 4. Chuẩn hóa dữ liệu 
 
 def scale_exog(exog_df: pd.DataFrame, scaler, exog_cols) -> pd.DataFrame:
-    """
-    Lấy đúng các cột exog_cols, scale bằng scaler (StandardScaler đã fit khi train).
-    """
     exog_sel = exog_df[exog_cols].copy()
     exog_scaled = pd.DataFrame(
         scaler.transform(exog_sel),
@@ -134,42 +110,16 @@ def scale_exog(exog_df: pd.DataFrame, scaler, exog_cols) -> pd.DataFrame:
     return exog_scaled
 
 
-
-# 5. Transform / Inverse-transform
-
-def transform_series(s: pd.Series, method="identity"):
+# 5. Log dữ liệu và chuyển ngược lại 
+def transform_series(s: pd.Series, method="log"):
     s = pd.Series(s).astype(float)
-
-    if method == "identity":
-        return s.copy(), None
-
     if method == "log":
         return np.log(s + 1e-6), None
-
-    if method == "boxcox":
-        y = s + 1e-6
-        y_bc, lam = stats.boxcox(y)
-        return pd.Series(y_bc, index=s.index), lam
-
     raise ValueError("Transform method không hợp lệ")
 
 
-def inv_transform(s_t: pd.Series, method="identity", lam=None):
-
+def inv_transform(s_t: pd.Series, method="log", lam=None):
     s_t = pd.Series(s_t).astype(float)
-
-    if method == "identity":
-        return s_t
-
     if method == "log":
         return np.exp(s_t) - 1e-6
-
-    if method == "boxcox":
-        # xử lý đặc biệt khi lam=0
-        if lam is None:
-            raise ValueError("Cần lam để inverse BoxCox")
-        if lam == 0:
-            return np.exp(s_t) - 1e-6
-        return np.power(s_t * lam + 1, 1 / lam) - 1e-6
-
     raise ValueError("Transform method không hợp lệ")

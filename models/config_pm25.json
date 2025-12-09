@@ -18,25 +18,12 @@
     "SO2",
     "pressure",
     "temperature",
-    "wind_speed",
-    "humidity",
     "rain",
     "rain_hours",
     "pressure_lag1",
     "temperature_lag1",
-    "humidity_lag1",
     "PM10_lag1"
   ],
-  "train_until": "2025-01-29",
-  "test_metrics": {
-    "mae": 19.794467078288992,
-    "rmse": 23.325436948736204,
-    "mape": 24.500177640900525,
-    "test_size_days": 30,
-    "test_start": "2024-12-31",
-    "test_end": "2025-01-29"
-  },
-  "updated_at": "2025-12-06 14:51:04",
   "weekly_eval": {
     "horizon_days": 7,
     "step_days": 7,
@@ -47,5 +34,30 @@
       "rmse": 16.499456470823706,
       "mape": 23.761661723088924
     }
-  }
+  },
+  "best_order": [
+    1,
+    1,
+    2
+  ],
+  "best_seasonal": [
+    0,
+    0,
+    1,
+    7
+  ],
+  "best_exog_cols": [
+    "PM10",
+    "NO2",
+    "SO2",
+    "pressure",
+    "temperature",
+    "rain",
+    "rain_hours",
+    "pressure_lag1",
+    "temperature_lag1",
+    "PM10_lag1"
+  ],
+  "last_train_date": "2025-12-04",
+  "n_train_samples": 1069
 }
