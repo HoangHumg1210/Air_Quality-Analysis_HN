@@ -313,7 +313,7 @@ def main():
         Dự báo chất lượng không khí
     </h1>
     <p style='text-align: center; color: #666; margin-bottom: 30px;'>
-        Hà Nội | Mô hình SARIMAX dự báo 3 ngày
+        Hà Nội | Mô hình SARIMAX
     </p>
     """, unsafe_allow_html=True)
 
