@@ -150,7 +150,6 @@ def create_aqi_gauge(pm25_value: float, title: str) -> go.Figure:
     return fig
 
 def create_future_forecast_chart(df_forecast: pd.DataFrame, start_date_str: str) -> go.Figure:
-    """Chart for 3-day AQI forecast."""
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -197,7 +196,7 @@ def create_future_forecast_chart(df_forecast: pd.DataFrame, start_date_str: str)
     return fig
 
 def create_comparison_chart(df_comparison: pd.DataFrame) -> go.Figure:
-    """Create forecast vs actual comparison chart for backtest mode."""
+
     fig = go.Figure()
     
     # Thực tế
@@ -353,7 +352,7 @@ def main():
             st.markdown("#### Chọn ngày kiểm tra")
             
             # Restrict to November 2025 only (best model performance)
-            min_date_2025 = datetime(2025, 11, 1).date()
+            min_date_2025 = datetime(2024, 1, 1).date()
             max_date_2025 = datetime(2025, 11, 30).date()
             max_selectable = max_date_2025 - timedelta(days=0)
             default_date = datetime(2025, 11, 15).date()  # Mid-November
@@ -365,7 +364,7 @@ def main():
                 max_value=max_selectable,
             )
             forecast_start = selected_date + timedelta(days=1)
-            horizon_days = 3
+            horizon_days = 5
             
             # Show actual training info
             train_start_date = datetime(2023, 1, 1).date()
@@ -409,12 +408,12 @@ def main():
 
 
 
-    if forecast_mode == "So sánh với quá khứ":
+    if forecast_mode == "Đánh giá độ chính xác":
         df_forecast = forecast_with_rolling_window(
             test_date=pd.Timestamp(forecast_start),
             horizon_days=horizon_days,
             window_months=6
-        )
+    )
     else:
         df_forecast = forecast_pm25_future(start_date=forecast_start, horizon_days=horizon_days)
     

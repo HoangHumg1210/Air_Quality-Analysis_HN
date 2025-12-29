@@ -18,10 +18,13 @@
     "SO2",
     "pressure",
     "temperature",
+    "wind_speed",
     "rain",
     "rain_hours",
+    "humidity",
     "pressure_lag1",
     "temperature_lag1",
+    "humidity_lag1",
     "PM10_lag1"
   ],
   "weekly_eval": {
@@ -52,10 +55,13 @@
     "SO2",
     "pressure",
     "temperature",
+    "wind_speed",
     "rain",
     "rain_hours",
+    "humidity",
     "pressure_lag1",
     "temperature_lag1",
+    "humidity_lag1",
     "PM10_lag1"
   ],
   "last_train_date": "2025-12-04",

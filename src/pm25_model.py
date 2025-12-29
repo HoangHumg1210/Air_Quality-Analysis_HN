@@ -15,16 +15,11 @@ from utils_pm25 import build_pm25_daily, build_exog_daily
 
 best_order = (1, 1, 2)
 best_seasonal = (0, 0, 1, 7)
-best_exog_cols = ['PM10',
-                'NO2',
-                'SO2',
-                'pressure',
-                'temperature',
-                'rain',
-                'rain_hours',
-                'pressure_lag1',
-                'temperature_lag1',
-                'PM10_lag1']
+best_exog_cols = ['PM10', 'NO2', 'SO2', 'pressure', 'temperature', 
+                  'wind_speed', 'rain', 'rain_hours', 'humidity',
+                  'pressure_lag1', 'temperature_lag1', 'humidity_lag1', 
+                  'PM10_lag1']
+                  
 TRANSFORM_METHOD = "log"
 
 MODEL_DIRNAME = "models"
@@ -126,11 +121,9 @@ def train_and_save_final_model():
         exog=exog_scaled.astype(float),
         order=best_order,
         seasonal_order=best_seasonal,
-        enforce_stationarity=False,
-        enforce_invertibility=False,
     )
 
-    fitted_model = model.fit(maxiter=200, disp=True)
+    fitted_model = model.fit(maxiter=200, disp=False)
     print(" Hoàn thành!")
 
     # Lưu model và scaler
@@ -165,9 +158,6 @@ def train_and_save_final_model():
 
     print("\n" + "=" * 60)
     print(" Hoàn thành train model!")
-    print(f" Model:  {model_dir / MODEL_FILENAME}")
-    print(f" Scaler: {model_dir / SCALER_FILENAME}")
-    print(f" Config: {config_path}")
     print(f" Trained on: {len(y_full)} days")
     print("=" * 60)
     return fitted_model, scaler, cfg
@@ -418,8 +408,6 @@ def forecast_with_rolling_window(
         exog=exog_scaled,
         order=(1, 1, 2),
         seasonal_order=(0, 0, 1, 7),
-        enforce_stationarity=False,
-        enforce_invertibility=False,
     )
     
     results = model.fit(disp=False)
@@ -468,14 +456,15 @@ def forecast_with_rolling_window(
     print(f" Dự báo hoàn thành: PM2.5  {df_result['PM25_forecast'].min():.1f} - {df_result['PM25_forecast'].max():.1f}")
     
     return df_result
-#   CLI ĐƠN GIẢN KHI CHẠY TRỰC TIẾP
+
+#
 
 if __name__ == "__main__":
     print("Bắt đầu train model: ")
     model, scaler, cfg = train_and_save_final_model()
 
-    print("\n>>> TEST DỰ BÁO 3 NGÀY SAU NGÀY CUỐI CÙNG")
+    print("\n TEST DỰ BÁO 3 NGÀY SAU NGÀY CUỐI CÙNG")
     df = forecast_pm25_future(horizon_days=3)
-    print("\n" + "=" * 60)
+    print("\n" + "=======")
     print(df.to_string(index=False))
-    print("=" * 60)
+    print("=========")
